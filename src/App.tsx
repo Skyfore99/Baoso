@@ -311,7 +311,16 @@ export default function App() {
       document.head.appendChild(link);
     }
     const style = document.createElement("style");
-    style.innerHTML = `body { font-family: 'Inter', sans-serif; } ::-webkit-scrollbar { width: 5px; height: 5px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }`;
+    // Fix iOS Zoom: thêm media query ép font size 16px cho input trên mobile
+    style.innerHTML = `
+      body { font-family: 'Inter', sans-serif; } 
+      ::-webkit-scrollbar { width: 5px; height: 5px; } 
+      ::-webkit-scrollbar-track { background: transparent; } 
+      ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+      @media screen and (max-width: 768px) {
+        input, select, textarea { font-size: 16px !important; }
+      }
+    `;
     document.head.appendChild(style);
 
     const savedUrl = localStorage.getItem("gas_api_url") || HARDCODED_API_URL;
