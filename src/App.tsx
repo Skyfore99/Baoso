@@ -31,7 +31,6 @@ import {
   Zap,
   Trash2,
   ChevronDown,
-  ArrowUpDown, // Import thêm icon sort
 } from "lucide-react";
 
 // --- CONFIG ---
@@ -100,7 +99,7 @@ function updateConfigSheet(doc, request, newTotal) {
                if (String(configValues[i][0]) === String(request.ma) && 
                    String(configValues[i][1]) === String(request.style) &&
                    String(configValues[i][2]) === String(request.mau) &&
-                   String(configValues[i][3]) === String(request.don) && // Check Đơn
+                   String(configValues[i][3]) === String(request.don) && 
                    String(configValues[i][4]) === String(request.po)) {
                    
                    if (request.nhom) sheetConfig.getRange(i + 2, 8).setValue(request.nhom);
@@ -122,7 +121,7 @@ function handleGetConfig(doc) {
   
   const configData = sheetConfig.getRange(2, 1, lastRow - 1, 9).getValues();
   
-  // Tính tổng hiện tại từ Data (Group by PO+Ma+Mau+Style+Don)
+  // Tính tổng hiện tại từ Data
   let sheetData = doc.getSheetByName(SHEET_DATA);
   const totals = {};
   if (sheetData && sheetData.getLastRow() >= 2) {
@@ -130,7 +129,6 @@ function handleGetConfig(doc) {
     for (let i = 0; i < dataValues.length; i++) {
       let poRaw = String(dataValues[i][1]);
       if(poRaw.startsWith("'")) poRaw = poRaw.substring(1);
-      // Key: PO_Ma_Mau_Style_Don
       const key = poRaw + "_" + String(dataValues[i][3]) + "_" + String(dataValues[i][5]) + "_" + String(dataValues[i][4]) + "_" + String(dataValues[i][2]);
       totals[key] = (totals[key] || 0) + (Number(dataValues[i][8]) || 0);
     }
@@ -158,14 +156,12 @@ function handleGetConfig(doc) {
 
 function responseJSON(data) { return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON); }
 
-// Thêm tham số don vào hàm getCumulative
 function getCumulative(sheet, po, ma, mau, style, don) {
   const data = sheet.getDataRange().getValues();
   let total = 0;
   for (let i = 1; i < data.length; i++) {
     let rowPO = String(data[i][1]);
     if(rowPO.startsWith("'")) rowPO = rowPO.substring(1);
-    // Thêm check Don (col 2)
     if (rowPO==String(po) && String(data[i][3])==String(ma) && String(data[i][5])==String(mau) && String(data[i][4])==String(style) && String(data[i][2])==String(don)) {
       total += Number(data[i][8]);
     }
@@ -297,7 +293,8 @@ export default function App() {
     shipdate: "",
     style: "",
   });
-  // Removed debouncedFilters state - Filtering is now direct
+  // Add debounced filters state
+  const [debouncedFilters, setDebouncedFilters] = useState(filters);
 
   // Removed manualData state
   const [persistentGroup, setPersistentGroup] = useState("");
@@ -310,8 +307,6 @@ export default function App() {
   );
   const [reportData, setReportData] = useState([]);
   const [reportFilterMa, setReportFilterMa] = useState("");
-  // Sort State
-  const [sortOrder, setSortOrder] = useState("asc");
 
   const [toast, setToast] = useState({ show: false, msg: "", type: "info" });
   const qtyInputRef = useRef(null);
@@ -335,8 +330,9 @@ export default function App() {
       document.head.appendChild(link);
     }
     const style = document.createElement("style");
-    // Add smoothing styles
+    // Add smoothing styles & Fix keyboard push behavior
     style.innerHTML = `
+      html, body { height: 100%; overflow: hidden; }
       body { font-family: 'Inter', sans-serif; overscroll-behavior: none; } 
       * { -webkit-tap-highlight-color: transparent; }
       ::-webkit-scrollbar { width: 5px; height: 5px; } 
@@ -377,12 +373,26 @@ export default function App() {
     return () => clearInterval(interval);
   }, [connectionStatus, apiUrl]);
 
+  // Debounce logic for filters: Style = 2000ms, Others = 500ms
+  useEffect(() => {
+    const isStyleChanged = filters.style !== debouncedFilters.style;
+    const delay = isStyleChanged ? 2000 : 500;
+
+    const handler = setTimeout(() => {
+      setDebouncedFilters(filters);
+    }, delay);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [filters]);
+
   // Reset showAllInput when filters change
   useEffect(() => {
     setShowAllInput(false);
   }, [filters]);
 
-  // OPTIMIZATION: Filter using useMemo directly on filters (No Debounce)
+  // OPTIMIZATION: Filter using useMemo and debounced filters
   const filteredItems = useMemo(() => {
     if (masterItems.length === 0) return [];
     return masterItems.filter((item) => {
@@ -569,19 +579,10 @@ export default function App() {
     ...new Set(reportData.map((item) => item.ma).filter(Boolean)),
   ];
 
-  // Logic to render report data based on filter & sort
-  const reportList = useMemo(() => {
-    let data = reportFilterMa
-      ? reportData.filter((item) => String(item.ma) === String(reportFilterMa))
-      : reportData;
-
-    // Sort logic
-    return [...data].sort((a, b) => {
-      const sA = String(a.style || "").toLowerCase();
-      const sB = String(b.style || "").toLowerCase();
-      return sortOrder === "asc" ? sA.localeCompare(sB) : sB.localeCompare(sA);
-    });
-  }, [reportData, reportFilterMa, sortOrder]);
+  // Logic to render report data based on filter
+  const reportList = reportFilterMa
+    ? reportData.filter((item) => item.ma === reportFilterMa)
+    : reportData;
 
   const copyCode = () =>
     navigator.clipboard
@@ -1095,14 +1096,7 @@ export default function App() {
                 {/* Custom Report Header - Updated Layout for better fit */}
                 {/* Style: 20%, Màu: 12%, PO: 24%, Ship: 16%, Nhóm: 14%, Qty: 14% */}
                 <div className="grid grid-cols-[18%_10%_12%_24%_12%_12%_12%] gap-0.5 px-2 py-2 bg-slate-100 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider text-center">
-                  <div
-                    className="text-left pl-1"
-                    onClick={() =>
-                      setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"))
-                    }
-                  >
-                    Style {sortOrder === "asc" ? "▲" : "▼"}
-                  </div>
+                  <div className="text-left pl-1">Style</div>
                   <div>Màu</div>
                   <div>Đơn</div>
                   <div>PO</div>
@@ -1112,13 +1106,19 @@ export default function App() {
                 </div>
 
                 <div className="overflow-y-auto h-full pb-20 divide-y divide-slate-100 bg-white custom-scrollbar">
-                  {reportList.length === 0 && !loadingReport ? (
+                  {(reportFilterMa
+                    ? reportData.filter((item) => item.ma === reportFilterMa)
+                    : reportData
+                  ).length === 0 && !loadingReport ? (
                     <div className="flex flex-col items-center justify-center h-40 text-slate-400 gap-2">
                       <Search size={32} className="opacity-20" />
                       <span className="text-xs">Chưa có dữ liệu hiển thị</span>
                     </div>
                   ) : (
-                    reportList.map((item, idx) => (
+                    (reportFilterMa
+                      ? reportData.filter((item) => item.ma === reportFilterMa)
+                      : reportData
+                    ).map((item, idx) => (
                       <div
                         key={idx}
                         className="grid grid-cols-[18%_10%_12%_24%_12%_12%_12%] gap-0.5 px-2 py-2.5 text-xs hover:bg-slate-50 transition items-center border-b border-slate-50"
@@ -1171,7 +1171,7 @@ export default function App() {
                 </span>
                 <span className="text-xl font-bold text-blue-600">
                   {formatDecimal(
-                    reportList.reduce(
+                    displayedReportData.reduce(
                       (acc, curr) => acc + (parseFloat(curr.nk) || 0),
                       0
                     )
