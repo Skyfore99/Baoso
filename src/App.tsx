@@ -31,6 +31,7 @@ import {
   Zap,
   Trash2,
   ChevronDown,
+  ArrowUpDown, // Import thêm icon sort
 } from "lucide-react";
 
 // --- CONFIG ---
@@ -99,7 +100,7 @@ function updateConfigSheet(doc, request, newTotal) {
                if (String(configValues[i][0]) === String(request.ma) && 
                    String(configValues[i][1]) === String(request.style) &&
                    String(configValues[i][2]) === String(request.mau) &&
-                   String(configValues[i][3]) === String(request.don) && 
+                   String(configValues[i][3]) === String(request.don) && // Check Đơn
                    String(configValues[i][4]) === String(request.po)) {
                    
                    if (request.nhom) sheetConfig.getRange(i + 2, 8).setValue(request.nhom);
@@ -121,7 +122,7 @@ function handleGetConfig(doc) {
   
   const configData = sheetConfig.getRange(2, 1, lastRow - 1, 9).getValues();
   
-  // Tính tổng hiện tại từ Data
+  // Tính tổng hiện tại từ Data (Group by PO+Ma+Mau+Style+Don)
   let sheetData = doc.getSheetByName(SHEET_DATA);
   const totals = {};
   if (sheetData && sheetData.getLastRow() >= 2) {
@@ -129,6 +130,7 @@ function handleGetConfig(doc) {
     for (let i = 0; i < dataValues.length; i++) {
       let poRaw = String(dataValues[i][1]);
       if(poRaw.startsWith("'")) poRaw = poRaw.substring(1);
+      // Key: PO_Ma_Mau_Style_Don
       const key = poRaw + "_" + String(dataValues[i][3]) + "_" + String(dataValues[i][5]) + "_" + String(dataValues[i][4]) + "_" + String(dataValues[i][2]);
       totals[key] = (totals[key] || 0) + (Number(dataValues[i][8]) || 0);
     }
@@ -156,12 +158,14 @@ function handleGetConfig(doc) {
 
 function responseJSON(data) { return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON); }
 
+// Thêm tham số don vào hàm getCumulative
 function getCumulative(sheet, po, ma, mau, style, don) {
   const data = sheet.getDataRange().getValues();
   let total = 0;
   for (let i = 1; i < data.length; i++) {
     let rowPO = String(data[i][1]);
     if(rowPO.startsWith("'")) rowPO = rowPO.substring(1);
+    // Thêm check Don (col 2)
     if (rowPO==String(po) && String(data[i][3])==String(ma) && String(data[i][5])==String(mau) && String(data[i][4])==String(style) && String(data[i][2])==String(don)) {
       total += Number(data[i][8]);
     }
@@ -283,6 +287,7 @@ export default function App() {
   const [selectedItem, setSelectedItem] = useState(null);
   const [lastSync, setLastSync] = useState(null);
   const [isManualMode, setIsManualMode] = useState(false);
+  const [showAllInput, setShowAllInput] = useState(false);
 
   const [filters, setFilters] = useState({
     ma: "",
@@ -292,8 +297,7 @@ export default function App() {
     shipdate: "",
     style: "",
   });
-  // Add debounced filters state
-  const [debouncedFilters, setDebouncedFilters] = useState(filters);
+  // Removed debouncedFilters state - Filtering is now direct
 
   // Removed manualData state
   const [persistentGroup, setPersistentGroup] = useState("");
@@ -306,6 +310,8 @@ export default function App() {
   );
   const [reportData, setReportData] = useState([]);
   const [reportFilterMa, setReportFilterMa] = useState("");
+  // Sort State
+  const [sortOrder, setSortOrder] = useState("asc");
 
   const [toast, setToast] = useState({ show: false, msg: "", type: "info" });
   const qtyInputRef = useRef(null);
@@ -371,48 +377,36 @@ export default function App() {
     return () => clearInterval(interval);
   }, [connectionStatus, apiUrl]);
 
-  // Debounce logic for filters: Style = 2000ms, Others = 500ms
+  // Reset showAllInput when filters change
   useEffect(() => {
-    const isStyleChanged = filters.style !== debouncedFilters.style;
-    const delay = isStyleChanged ? 2000 : 500;
-
-    const handler = setTimeout(() => {
-      setDebouncedFilters(filters);
-    }, delay);
-
-    return () => {
-      clearTimeout(handler);
-    };
+    setShowAllInput(false);
   }, [filters]);
 
-  // OPTIMIZATION: Filter using useMemo and debounced filters
+  // OPTIMIZATION: Filter using useMemo directly on filters (No Debounce)
   const filteredItems = useMemo(() => {
     if (masterItems.length === 0) return [];
     return masterItems.filter((item) => {
       return (
-        (!debouncedFilters.ma ||
-          item.ma.toLowerCase().includes(debouncedFilters.ma.toLowerCase())) &&
-        (!debouncedFilters.style ||
-          item.style
-            .toLowerCase()
-            .includes(debouncedFilters.style.toLowerCase())) &&
-        (!debouncedFilters.mau ||
-          item.mau
-            .toLowerCase()
-            .includes(debouncedFilters.mau.toLowerCase())) &&
-        (!debouncedFilters.don ||
-          item.don
-            .toLowerCase()
-            .includes(debouncedFilters.don.toLowerCase())) &&
-        (!debouncedFilters.po ||
-          item.po.toLowerCase().includes(debouncedFilters.po.toLowerCase())) &&
-        (!debouncedFilters.shipdate ||
-          item.shipdate
-            .toLowerCase()
-            .includes(debouncedFilters.shipdate.toLowerCase()))
+        (!filters.ma ||
+          item.ma.toLowerCase().includes(filters.ma.toLowerCase())) &&
+        (!filters.style ||
+          item.style.toLowerCase().includes(filters.style.toLowerCase())) &&
+        (!filters.mau ||
+          item.mau.toLowerCase().includes(filters.mau.toLowerCase())) &&
+        (!filters.don ||
+          item.don.toLowerCase().includes(filters.don.toLowerCase())) &&
+        (!filters.po ||
+          item.po.toLowerCase().includes(filters.po.toLowerCase())) &&
+        (!filters.shipdate ||
+          item.shipdate.toLowerCase().includes(filters.shipdate.toLowerCase()))
       );
     });
-  }, [debouncedFilters, masterItems]);
+  }, [filters, masterItems]);
+
+  // Input List Items
+  const itemsToDisplay = showAllInput
+    ? filteredItems
+    : filteredItems.slice(0, 50);
 
   useEffect(() => {
     if (activeTab === "report") fetchReport();
@@ -575,9 +569,19 @@ export default function App() {
     ...new Set(reportData.map((item) => item.ma).filter(Boolean)),
   ];
 
-  const reportList = reportFilterMa
-    ? reportData.filter((item) => item.ma === reportFilterMa)
-    : reportData;
+  // Logic to render report data based on filter & sort
+  const reportList = useMemo(() => {
+    let data = reportFilterMa
+      ? reportData.filter((item) => String(item.ma) === String(reportFilterMa))
+      : reportData;
+
+    // Sort logic
+    return [...data].sort((a, b) => {
+      const sA = String(a.style || "").toLowerCase();
+      const sB = String(b.style || "").toLowerCase();
+      return sortOrder === "asc" ? sA.localeCompare(sB) : sB.localeCompare(sA);
+    });
+  }, [reportData, reportFilterMa, sortOrder]);
 
   const copyCode = () =>
     navigator.clipboard
@@ -588,11 +592,6 @@ export default function App() {
     setPersistentGroup(g);
     setShowGroupList(false);
   };
-
-  // Prepare input list items outside JSX to avoid complex nesting
-  const inputListItems = isFiltering
-    ? filteredItems
-    : filteredItems.slice(0, 50);
 
   const filteredGroups = persistentGroup
     ? availableGroups.filter((g) =>
@@ -843,7 +842,7 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="grid grid-cols-2 gap-2 pb-20">
-                    {inputListItems.map((item, idx) => {
+                    {itemsToDisplay.map((item, idx) => {
                       const diff = (item.current || 0) - (Number(item.kh) || 0);
                       return (
                         <div
@@ -858,14 +857,15 @@ export default function App() {
                         >
                           <div>
                             <div className="flex justify-between items-start mb-1">
-                              {/* Left: Style */}
-                              <span
-                                className="font-black text-slate-800 text-base truncate flex-1 mr-1"
-                                title={item.style}
-                              >
-                                {item.style}
-                              </span>
-                              {/* Right: PO */}
+                              {/* Left: Style & PO */}
+                              <div className="flex items-center gap-1 min-w-0 flex-1">
+                                <span
+                                  className="font-black text-slate-800 text-base truncate flex-1 mr-1"
+                                  title={item.style}
+                                >
+                                  {item.style}
+                                </span>
+                              </div>
                               <span className="text-xs font-bold font-mono bg-slate-100 px-2 py-0.5 rounded text-slate-600 border border-slate-200 shrink-0">
                                 {item.po}
                               </span>
@@ -920,10 +920,14 @@ export default function App() {
                         </div>
                       );
                     })}
-                    {!isFiltering && filteredItems.length > 50 && (
-                      <div className="text-center text-xs text-slate-400 py-2 col-span-2">
-                        Còn {filteredItems.length - 50} kết quả khác... (Lọc để
-                        xem thêm)
+                    {!showAllInput && filteredItems.length > 50 && (
+                      <div className="col-span-2 py-3 px-2">
+                        <button
+                          onClick={() => setShowAllInput(true)}
+                          className="w-full bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-2 rounded-lg text-sm border border-slate-200 transition"
+                        >
+                          Hiển thị tất cả ({filteredItems.length})
+                        </button>
                       </div>
                     )}
                   </div>
@@ -1091,7 +1095,14 @@ export default function App() {
                 {/* Custom Report Header - Updated Layout for better fit */}
                 {/* Style: 20%, Màu: 12%, PO: 24%, Ship: 16%, Nhóm: 14%, Qty: 14% */}
                 <div className="grid grid-cols-[18%_10%_12%_24%_12%_12%_12%] gap-0.5 px-2 py-2 bg-slate-100 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider text-center">
-                  <div className="text-left pl-1">Style</div>
+                  <div
+                    className="text-left pl-1"
+                    onClick={() =>
+                      setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"))
+                    }
+                  >
+                    Style {sortOrder === "asc" ? "▲" : "▼"}
+                  </div>
                   <div>Màu</div>
                   <div>Đơn</div>
                   <div>PO</div>
