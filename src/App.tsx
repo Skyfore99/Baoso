@@ -415,21 +415,29 @@ export default function App() {
     if (masterItems.length === 0) return [];
     return masterItems.filter((item) => {
       return (
-        (!filters.ma ||
-          item.ma.toLowerCase().includes(filters.ma.toLowerCase())) &&
-        (!filters.style ||
-          item.style.toLowerCase().includes(filters.style.toLowerCase())) &&
-        (!filters.mau ||
-          item.mau.toLowerCase().includes(filters.mau.toLowerCase())) &&
-        (!filters.don ||
-          item.don.toLowerCase().includes(filters.don.toLowerCase())) &&
-        (!filters.po ||
-          item.po.toLowerCase().includes(filters.po.toLowerCase())) &&
-        (!filters.shipdate ||
-          item.shipdate.toLowerCase().includes(filters.shipdate.toLowerCase()))
+        (!debouncedFilters.ma ||
+          item.ma.toLowerCase().includes(debouncedFilters.ma.toLowerCase())) &&
+        (!debouncedFilters.style ||
+          item.style
+            .toLowerCase()
+            .includes(debouncedFilters.style.toLowerCase())) &&
+        (!debouncedFilters.mau ||
+          item.mau
+            .toLowerCase()
+            .includes(debouncedFilters.mau.toLowerCase())) &&
+        (!debouncedFilters.don ||
+          item.don
+            .toLowerCase()
+            .includes(debouncedFilters.don.toLowerCase())) &&
+        (!debouncedFilters.po ||
+          item.po.toLowerCase().includes(debouncedFilters.po.toLowerCase())) &&
+        (!debouncedFilters.shipdate ||
+          item.shipdate
+            .toLowerCase()
+            .includes(debouncedFilters.shipdate.toLowerCase()))
       );
     });
-  }, [filters, masterItems]);
+  }, [debouncedFilters, masterItems]);
 
   // Input List Items
   const itemsToDisplay = showAllInput
@@ -519,11 +527,14 @@ export default function App() {
   const handleAutoFill = (e) => {
     e.preventDefault();
     if (!selectedItem) return;
-    const remaining = Number(selectedItem.kh) - selectedItem.current;
-    if (remaining > 0) {
-      setQty(String(remaining));
+    // Set qty to KH value directly
+    const target = Number(selectedItem.kh);
+    if (target > 0) {
+      setQty(String(target));
       if (qtyInputRef.current) qtyInputRef.current.focus();
-    } else showToast("Đã nhập đủ KH", "info");
+    } else {
+      showToast("Không có KH", "info");
+    }
   };
 
   const submitData = async (e) => {
@@ -688,7 +699,7 @@ export default function App() {
 
         {/* CONFIG PANEL */}
         <div
-          className={`bg-slate-50 border-b border-slate-200 p-4 absolute top-[64px] left-0 w-full z-30 transition-all duration-300 shadow-lg ${
+          className={`bg-slate-50 border-b border-slate-200 p-4 absolute top-[64px] left-0 w-full z-20 transition-all duration-300 shadow-lg ${
             showConfig
               ? "translate-y-0"
               : "-translate-y-full opacity-0 pointer-events-none"
