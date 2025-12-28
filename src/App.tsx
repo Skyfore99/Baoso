@@ -55,10 +55,10 @@ function doPost(e) {
         sheet.appendRow(["Thời gian", "PO", "Đơn hàng", "Mã hàng", "Style", "Màu", "ShipDate", "Nhóm", "Số lượng"]); 
       }
       
-      const qty = parseFloat(request.qty);
+      const qty = parseFloat(request.qty); // Đây là số NK (chênh lệch)
       const limit = parseFloat(request.limit) || 0; 
       
-      // Thêm request.don vào hàm tính tổng để check chính xác
+      // Tính lại tổng hiện tại trong sheet để kiểm tra KH
       const currentTotal = getCumulative(sheet, request.po, request.ma, request.mau, request.style, request.don);
       const newTotal = parseFloat((currentTotal + qty).toFixed(2));
       
@@ -121,7 +121,6 @@ function handleGetConfig(doc) {
   
   const configData = sheetConfig.getRange(2, 1, lastRow - 1, 9).getValues();
   
-  // Tính tổng hiện tại từ Data
   let sheetData = doc.getSheetByName(SHEET_DATA);
   const totals = {};
   if (sheetData && sheetData.getLastRow() >= 2) {
@@ -174,14 +173,28 @@ function getDailyData(sheet, dateString, timezone) {
   const data = sheet.getDataRange().getValues();
   const results = [];
   
+  // Cache totals map (Cumulative)
   const totalsMap = {}; 
-  
+  // Cache daily NK map (Sum of NK for the day)
+  const dailyNkMap = {};
+
   for (let i = 1; i < data.length; i++) {
      let p = String(data[i][1]); if(p.startsWith("'")) p = p.substring(1);
-     // Key: PO_Ma_Mau_Style_Don
      let key = p + "_" + data[i][3] + "_" + data[i][5] + "_" + data[i][4] + "_" + data[i][2];
-     totalsMap[key] = (totalsMap[key] || 0) + (Number(data[i][8]) || 0);
+     const val = Number(data[i][8]) || 0;
+     
+     // Calc Cumulative
+     totalsMap[key] = (totalsMap[key] || 0) + val;
+     
+     // Calc Daily NK
+     const rowDate = new Date(data[i][0]);
+     const rowDateStr = Utilities.formatDate(rowDate, timezone, "yyyy-MM-dd");
+     if (rowDateStr === dateString) {
+         dailyNkMap[key] = (dailyNkMap[key] || 0) + val;
+     }
   }
+  
+  const seenKeys = {};
 
   for (let i = data.length - 1; i >= 1; i--) {
     const rowDate = new Date(data[i][0]);
@@ -191,20 +204,25 @@ function getDailyData(sheet, dateString, timezone) {
       let rowPO = String(data[i][1]);
       if(rowPO.startsWith("'")) rowPO = rowPO.substring(1);
       
-      let rowShip = data[i][6];
-      if (rowShip instanceof Date) rowShip = Utilities.formatDate(rowShip, Session.getScriptTimeZone(), "dd/MM/yyyy");
-      
-      // Key lookup bao gồm cả Don
       let key = rowPO + "_" + data[i][3] + "_" + data[i][5] + "_" + data[i][4] + "_" + data[i][2];
-      let entryQty = Number(data[i][8]) || 0;
 
-      results.push({ 
-        time: Utilities.formatDate(rowDate, timezone, "HH:mm"), 
-        po: rowPO, don: data[i][2], ma: data[i][3], style: data[i][4], mau: data[i][5], 
-        shipdate: rowShip, nhom: data[i][7],
-        nk: entryQty,
-        qty: totalsMap[key] || 0 
-      });
+      if (!seenKeys[key]) {
+        seenKeys[key] = true;
+        
+        let rowShip = data[i][6];
+        if (rowShip instanceof Date) rowShip = Utilities.formatDate(rowShip, Session.getScriptTimeZone(), "dd/MM/yyyy");
+        
+        // entryQty là tổng NK trong ngày (gộp)
+        let entryQty = dailyNkMap[key] || 0;
+
+        results.push({ 
+            time: Utilities.formatDate(rowDate, timezone, "HH:mm"), 
+            po: rowPO, don: data[i][2], ma: data[i][3], style: data[i][4], mau: data[i][5], 
+            shipdate: rowShip, nhom: data[i][7],
+            nk: entryQty, 
+            qty: totalsMap[key] || 0 
+        });
+      }
     }
   }
   return results;
@@ -330,7 +348,7 @@ export default function App() {
       document.head.appendChild(link);
     }
     const style = document.createElement("style");
-    // Add smoothing styles & Fix keyboard push behavior
+    // Add smoothing styles
     style.innerHTML = `
       html, body { height: 100%; overflow: hidden; }
       body { font-family: 'Inter', sans-serif; overscroll-behavior: none; } 
@@ -522,6 +540,13 @@ export default function App() {
     } else {
       if (!selectedItem) return showToast("Chưa chọn mã", "error");
       if (!qty) return showToast("Chưa nhập SL", "error");
+
+      // Calculate INCREMENT here!
+      // qty input is the New Cumulative
+      const newCumulative = parseFloat(qty);
+      const currentCumulative = selectedItem.current || 0;
+      inputQty = newCumulative - currentCumulative; // This is the value to save to Data sheet
+
       payload = {
         ...payload,
         po: selectedItem.po,
@@ -531,13 +556,12 @@ export default function App() {
         mau: selectedItem.mau,
         shipdate: selectedItem.shipdate,
         limit: selectedItem.kh,
-        qty: qty,
+        qty: inputQty, // Send increment
       };
-      inputQty = parseFloat(qty);
     }
 
-    // Optimistic Update
-    const newTotal = (selectedItem.current || 0) + inputQty;
+    // Optimistic Update: Update UI with the new Cumulative value
+    const newTotal = parseFloat(qty); // The value entered
     const updatedItem = { ...selectedItem, current: newTotal };
     setSelectedItem(updatedItem);
     setMasterItems((prev) =>
@@ -578,12 +602,9 @@ export default function App() {
   const uniqueReportMas = [
     ...new Set(reportData.map((item) => item.ma).filter(Boolean)),
   ];
-
-  // Logic to render report data based on filter
-  const reportList = reportFilterMa
+  const displayedReportData = reportFilterMa
     ? reportData.filter((item) => item.ma === reportFilterMa)
     : reportData;
-
   const copyCode = () =>
     navigator.clipboard
       .writeText(BACKEND_SCRIPT)
