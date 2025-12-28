@@ -1,6 +1,6 @@
 // @ts-nocheck
 /* eslint-disable */
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   Settings,
   HelpCircle,
@@ -29,6 +29,8 @@ import {
   AlertTriangle,
   Layers,
   Zap,
+  Trash2,
+  ChevronDown,
 } from "lucide-react";
 
 // --- CONFIG ---
@@ -56,7 +58,8 @@ function doPost(e) {
       const qty = parseFloat(request.qty);
       const limit = parseFloat(request.limit) || 0; 
       
-      const currentTotal = getCumulative(sheet, request.po, request.ma, request.mau);
+      // Thêm request.don vào hàm tính tổng để check chính xác
+      const currentTotal = getCumulative(sheet, request.po, request.ma, request.mau, request.style, request.don);
       const newTotal = parseFloat((currentTotal + qty).toFixed(2));
       
       if (limit > 0 && (newTotal > limit)) {
@@ -79,7 +82,7 @@ function doPost(e) {
     }
     else if (action === "get_summary") {
       let sheet = doc.getSheetByName(SHEET_DATA);
-      return responseJSON({ status: "success", data: getDailyData(sheet, request.date) });
+      return responseJSON({ status: "success", data: getDailyData(sheet, request.date, doc.getSpreadsheetTimeZone()) });
     }
   } catch (error) { return responseJSON({ status: "error", message: error.toString() }); } 
   finally { lock.releaseLock(); }
@@ -96,6 +99,7 @@ function updateConfigSheet(doc, request, newTotal) {
                if (String(configValues[i][0]) === String(request.ma) && 
                    String(configValues[i][1]) === String(request.style) &&
                    String(configValues[i][2]) === String(request.mau) &&
+                   String(configValues[i][3]) === String(request.don) && 
                    String(configValues[i][4]) === String(request.po)) {
                    
                    if (request.nhom) sheetConfig.getRange(i + 2, 8).setValue(request.nhom);
@@ -117,21 +121,33 @@ function handleGetConfig(doc) {
   
   const configData = sheetConfig.getRange(2, 1, lastRow - 1, 9).getValues();
   
+  // Tính tổng hiện tại từ Data
+  let sheetData = doc.getSheetByName(SHEET_DATA);
+  const totals = {};
+  if (sheetData && sheetData.getLastRow() >= 2) {
+    const dataValues = sheetData.getRange(2, 1, sheetData.getLastRow() - 1, 9).getValues();
+    for (let i = 0; i < dataValues.length; i++) {
+      let poRaw = String(dataValues[i][1]);
+      if(poRaw.startsWith("'")) poRaw = poRaw.substring(1);
+      const key = poRaw + "_" + String(dataValues[i][3]) + "_" + String(dataValues[i][5]) + "_" + String(dataValues[i][4]) + "_" + String(dataValues[i][2]);
+      totals[key] = (totals[key] || 0) + (Number(dataValues[i][8]) || 0);
+    }
+  }
+  
   const items = configData.map(r => {
     let shipdate = r[5];
     if (shipdate instanceof Date) shipdate = Utilities.formatDate(shipdate, Session.getScriptTimeZone(), "dd/MM/yyyy");
     else shipdate = String(shipdate || "");
 
+    const po = String(r[4]); const ma = String(r[0]); const mau = String(r[2]); const style = String(r[1]); const don = String(r[3]);
+    const key = po + "_" + ma + "_" + mau + "_" + style + "_" + don;
+
     return {
-      ma: String(r[0]), 
-      style: String(r[1]), 
-      mau: String(r[2]), 
-      don: String(r[3]), 
-      po: String(r[4]),
+      ma: ma, style: style, mau: mau, don: don, po: po,
       shipdate: shipdate,
       kh: Number(r[6]) || 0,        
       nhom: String(r[7] || ""),     
-      current: Number(r[8]) || 0    
+      current: totals[key] || 0    
     };
   }).filter(item => item.ma);
   
@@ -140,20 +156,20 @@ function handleGetConfig(doc) {
 
 function responseJSON(data) { return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON); }
 
-function getCumulative(sheet, po, ma, mau) {
+function getCumulative(sheet, po, ma, mau, style, don) {
   const data = sheet.getDataRange().getValues();
   let total = 0;
   for (let i = 1; i < data.length; i++) {
     let rowPO = String(data[i][1]);
     if(rowPO.startsWith("'")) rowPO = rowPO.substring(1);
-    if (rowPO==String(po) && String(data[i][3])==String(ma) && String(data[i][5])==String(mau)) {
+    if (rowPO==String(po) && String(data[i][3])==String(ma) && String(data[i][5])==String(mau) && String(data[i][4])==String(style) && String(data[i][2])==String(don)) {
       total += Number(data[i][8]);
     }
   }
   return total;
 }
 
-function getDailyData(sheet, dateString) {
+function getDailyData(sheet, dateString, timezone) {
   if (!sheet) return [];
   const data = sheet.getDataRange().getValues();
   const results = [];
@@ -162,13 +178,14 @@ function getDailyData(sheet, dateString) {
   
   for (let i = 1; i < data.length; i++) {
      let p = String(data[i][1]); if(p.startsWith("'")) p = p.substring(1);
-     let key = p + "_" + data[i][3] + "_" + data[i][5];
+     // Key: PO_Ma_Mau_Style_Don
+     let key = p + "_" + data[i][3] + "_" + data[i][5] + "_" + data[i][4] + "_" + data[i][2];
      totalsMap[key] = (totalsMap[key] || 0) + (Number(data[i][8]) || 0);
   }
 
   for (let i = data.length - 1; i >= 1; i--) {
     const rowDate = new Date(data[i][0]);
-    const rowDateStr = Utilities.formatDate(rowDate, Session.getScriptTimeZone(), "yyyy-MM-dd");
+    const rowDateStr = Utilities.formatDate(rowDate, timezone, "yyyy-MM-dd");
     
     if (rowDateStr === dateString) {
       let rowPO = String(data[i][1]);
@@ -177,12 +194,15 @@ function getDailyData(sheet, dateString) {
       let rowShip = data[i][6];
       if (rowShip instanceof Date) rowShip = Utilities.formatDate(rowShip, Session.getScriptTimeZone(), "dd/MM/yyyy");
       
-      let key = rowPO + "_" + data[i][3] + "_" + data[i][5];
+      // Key lookup bao gồm cả Don
+      let key = rowPO + "_" + data[i][3] + "_" + data[i][5] + "_" + data[i][4] + "_" + data[i][2];
+      let entryQty = Number(data[i][8]) || 0;
 
       results.push({ 
-        time: Utilities.formatDate(rowDate, Session.getScriptTimeZone(), "HH:mm"), 
+        time: Utilities.formatDate(rowDate, timezone, "HH:mm"), 
         po: rowPO, don: data[i][2], ma: data[i][3], style: data[i][4], mau: data[i][5], 
         shipdate: rowShip, nhom: data[i][7],
+        nk: entryQty,
         qty: totalsMap[key] || 0 
       });
     }
@@ -248,7 +268,6 @@ const Modal = ({ isOpen, onClose, title, icon: Icon, children }) => {
 };
 
 export default function App() {
-  // --- STATE ---
   const [activeTab, setActiveTab] = useState("input");
   const [showConfig, setShowConfig] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -261,29 +280,24 @@ export default function App() {
   const [loadingReport, setLoadingReport] = useState(false);
 
   const [masterItems, setMasterItems] = useState([]);
-  const [filteredItems, setFilteredItems] = useState([]);
   const [selectedItem, setSelectedItem] = useState(null);
   const [lastSync, setLastSync] = useState(null);
   const [isManualMode, setIsManualMode] = useState(false);
 
   const [filters, setFilters] = useState({
     ma: "",
-    style: "",
     mau: "",
     don: "",
     po: "",
     shipdate: "",
-  });
-  const [manualData, setManualData] = useState({
-    ma: "",
     style: "",
-    mau: "",
-    don: "",
-    po: "",
-    shipdate: "",
-    qty: "",
   });
+  // Add debounced filters state
+  const [debouncedFilters, setDebouncedFilters] = useState(filters);
+
+  // Removed manualData state
   const [persistentGroup, setPersistentGroup] = useState("");
+  const [showGroupList, setShowGroupList] = useState(false); // New state for dropdown
   const [qty, setQty] = useState("");
 
   const [availableGroups, setAvailableGroups] = useState([]);
@@ -296,7 +310,11 @@ export default function App() {
   const [toast, setToast] = useState({ show: false, msg: "", type: "info" });
   const qtyInputRef = useRef(null);
 
-  // --- EFFECTS ---
+  // Define isFiltering to fix ReferenceError
+  const isFiltering = Object.values(filters).some(
+    (f) => f && String(f).trim() !== ""
+  );
+
   useEffect(() => {
     if (!document.querySelector('script[src*="tailwindcss"]')) {
       const script = document.createElement("script");
@@ -311,12 +329,14 @@ export default function App() {
       document.head.appendChild(link);
     }
     const style = document.createElement("style");
-    // Fix iOS Zoom: thêm media query ép font size 16px cho input trên mobile
+    // Add smoothing styles
     style.innerHTML = `
-      body { font-family: 'Inter', sans-serif; } 
+      body { font-family: 'Inter', sans-serif; overscroll-behavior: none; } 
+      * { -webkit-tap-highlight-color: transparent; }
       ::-webkit-scrollbar { width: 5px; height: 5px; } 
       ::-webkit-scrollbar-track { background: transparent; } 
       ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+      .custom-scrollbar { -webkit-overflow-scrolling: touch; }
       @media screen and (max-width: 768px) {
         input, select, textarea { font-size: 16px !important; }
       }
@@ -351,35 +371,53 @@ export default function App() {
     return () => clearInterval(interval);
   }, [connectionStatus, apiUrl]);
 
+  // Debounce logic for filters: Style = 2000ms, Others = 500ms
   useEffect(() => {
-    if (masterItems.length > 0) {
-      const result = masterItems.filter((item) => {
-        return (
-          (!filters.ma ||
-            item.ma.toLowerCase().includes(filters.ma.toLowerCase())) &&
-          (!filters.style ||
-            item.style.toLowerCase().includes(filters.style.toLowerCase())) &&
-          (!filters.mau ||
-            item.mau.toLowerCase().includes(filters.mau.toLowerCase())) &&
-          (!filters.don ||
-            item.don.toLowerCase().includes(filters.don.toLowerCase())) &&
-          (!filters.po ||
-            item.po.toLowerCase().includes(filters.po.toLowerCase())) &&
-          (!filters.shipdate ||
-            item.shipdate
-              .toLowerCase()
-              .includes(filters.shipdate.toLowerCase()))
-        );
-      });
-      setFilteredItems(result);
-    }
-  }, [filters, masterItems]);
+    const isStyleChanged = filters.style !== debouncedFilters.style;
+    const delay = isStyleChanged ? 2000 : 500;
+
+    const handler = setTimeout(() => {
+      setDebouncedFilters(filters);
+    }, delay);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [filters]);
+
+  // OPTIMIZATION: Filter using useMemo and debounced filters
+  const filteredItems = useMemo(() => {
+    if (masterItems.length === 0) return [];
+    return masterItems.filter((item) => {
+      return (
+        (!debouncedFilters.ma ||
+          item.ma.toLowerCase().includes(debouncedFilters.ma.toLowerCase())) &&
+        (!debouncedFilters.style ||
+          item.style
+            .toLowerCase()
+            .includes(debouncedFilters.style.toLowerCase())) &&
+        (!debouncedFilters.mau ||
+          item.mau
+            .toLowerCase()
+            .includes(debouncedFilters.mau.toLowerCase())) &&
+        (!debouncedFilters.don ||
+          item.don
+            .toLowerCase()
+            .includes(debouncedFilters.don.toLowerCase())) &&
+        (!debouncedFilters.po ||
+          item.po.toLowerCase().includes(debouncedFilters.po.toLowerCase())) &&
+        (!debouncedFilters.shipdate ||
+          item.shipdate
+            .toLowerCase()
+            .includes(debouncedFilters.shipdate.toLowerCase()))
+      );
+    });
+  }, [debouncedFilters, masterItems]);
 
   useEffect(() => {
     if (activeTab === "report") fetchReport();
-  }, [activeTab]);
+  }, [activeTab, reportDate]);
 
-  // --- HELPERS ---
   const showToast = (msg, type = "info") => setToast({ show: true, msg, type });
   const formatDecimal = (num) =>
     num === undefined || num === null || num === ""
@@ -420,7 +458,6 @@ export default function App() {
       if (res.status === "success") {
         setMasterItems(res.items || []);
         if (!silent) {
-          setFilteredItems(res.items || []);
           setSyncStatus("complete");
           setTimeout(() => setSyncStatus("idle"), 3000);
         }
@@ -442,8 +479,9 @@ export default function App() {
     setSelectedItem(null);
   };
 
-  const handleManualChange = (e) => {
-    setManualData((prev) => ({ ...prev, [e.target.id]: e.target.value }));
+  const clearFilters = () => {
+    setFilters({ ma: "", mau: "", don: "", po: "", shipdate: "", style: "" });
+    setSelectedItem(null);
   };
 
   const handleSelectItem = (item) => {
@@ -456,7 +494,8 @@ export default function App() {
     }, 100);
   };
 
-  const handleAutoFill = () => {
+  const handleAutoFill = (e) => {
+    e.preventDefault();
     if (!selectedItem) return;
     const remaining = Number(selectedItem.kh) - selectedItem.current;
     if (remaining > 0) {
@@ -465,17 +504,17 @@ export default function App() {
     } else showToast("Đã nhập đủ KH", "info");
   };
 
-  const submitData = async () => {
+  const submitData = async (e) => {
+    if (e) e.preventDefault();
+
     if (!apiUrl) return showToast("Chưa kết nối Backend", "error");
     const currentGroup = persistentGroup;
     let payload = { action: "add", nhom: currentGroup };
     let inputQty = 0;
 
     if (isManualMode) {
-      if (!manualData.style || !manualData.qty)
-        return showToast("Thiếu Style/SL", "error");
-      payload = { ...payload, ...manualData };
-      inputQty = parseFloat(manualData.qty);
+      // Logic for manual mode kept as fallback
+      return;
     } else {
       if (!selectedItem) return showToast("Chưa chọn mã", "error");
       if (!qty) return showToast("Chưa nhập SL", "error");
@@ -493,20 +532,17 @@ export default function App() {
       inputQty = parseFloat(qty);
     }
 
-    if (isManualMode) {
-      setManualData((prev) => ({ ...prev, qty: "" }));
-      showToast("Đã lưu (Thủ công)", "success");
-    } else {
-      const newTotal = (selectedItem.current || 0) + inputQty;
-      const updatedItem = { ...selectedItem, current: newTotal };
-      setSelectedItem(updatedItem);
-      setMasterItems((prev) =>
-        prev.map((i) => (i === selectedItem ? updatedItem : i))
-      );
-      setQty("");
-      showToast("Đã lưu!", "success");
-      if (qtyInputRef.current) qtyInputRef.current.focus();
-    }
+    // Optimistic Update
+    const newTotal = (selectedItem.current || 0) + inputQty;
+    const updatedItem = { ...selectedItem, current: newTotal };
+    setSelectedItem(updatedItem);
+    setMasterItems((prev) =>
+      prev.map((i) => (i === selectedItem ? updatedItem : i))
+    );
+    setQty("");
+    showToast("Đã lưu!", "success");
+
+    if (qtyInputRef.current) qtyInputRef.current.focus();
 
     fetchGAS(apiUrl, payload)
       .then((res) => {
@@ -538,13 +574,31 @@ export default function App() {
   const uniqueReportMas = [
     ...new Set(reportData.map((item) => item.ma).filter(Boolean)),
   ];
-  const displayedReportData = reportFilterMa
+
+  const reportList = reportFilterMa
     ? reportData.filter((item) => item.ma === reportFilterMa)
     : reportData;
+
   const copyCode = () =>
     navigator.clipboard
       .writeText(BACKEND_SCRIPT)
       .then(() => showToast("Đã copy code"));
+
+  const selectGroup = (g) => {
+    setPersistentGroup(g);
+    setShowGroupList(false);
+  };
+
+  // Prepare input list items outside JSX to avoid complex nesting
+  const inputListItems = isFiltering
+    ? filteredItems
+    : filteredItems.slice(0, 50);
+
+  const filteredGroups = persistentGroup
+    ? availableGroups.filter((g) =>
+        g.toString().toLowerCase().includes(persistentGroup.toLowerCase())
+      )
+    : availableGroups;
 
   return (
     <div className="bg-slate-100 min-h-screen w-full flex justify-center items-center font-sans text-slate-800">
@@ -613,7 +667,7 @@ export default function App() {
 
         {/* CONFIG PANEL */}
         <div
-          className={`bg-slate-50 border-b border-slate-200 p-4 absolute top-[64px] left-0 w-full z-20 transition-all duration-300 shadow-lg ${
+          className={`bg-slate-50 border-b border-slate-200 p-4 absolute top-[64px] left-0 w-full z-30 transition-all duration-300 shadow-lg ${
             showConfig
               ? "translate-y-0"
               : "-translate-y-full opacity-0 pointer-events-none"
@@ -695,409 +749,281 @@ export default function App() {
           {/* --- INPUT VIEW --- */}
           {activeTab === "input" && (
             <div className="flex flex-col h-full overflow-hidden">
-              {/* GROUP INPUT */}
-              <div className="px-3 pt-3 pb-1 bg-white shrink-0 z-10">
-                <div className="flex items-center gap-2">
+              {/* GROUP INPUT ROW */}
+              <div className="px-3 pt-3 pb-1 bg-white shrink-0 z-20 flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-1">
                   <div className="text-xs font-bold text-blue-600 uppercase flex items-center gap-1 min-w-[50px]">
                     <Layers size={14} /> Nhóm
                   </div>
-                  <div className="relative flex-1">
+                  <div className="relative flex-1 group">
                     <input
-                      list="dl_groups"
                       value={persistentGroup}
                       onChange={(e) => setPersistentGroup(e.target.value)}
-                      className="w-full p-2 bg-blue-50 border border-blue-200 rounded-lg text-sm font-bold text-blue-800 focus:outline-none focus:border-blue-500 transition placeholder-blue-300"
-                      placeholder="Nhập hoặc chọn Nhóm..."
+                      onFocus={() => setShowGroupList(true)}
+                      onBlur={() =>
+                        setTimeout(() => setShowGroupList(false), 200)
+                      }
+                      className="w-full p-2 bg-blue-50 border border-blue-200 rounded-lg text-sm font-bold text-blue-800 focus:outline-none focus:border-blue-500 transition placeholder-blue-300 pr-8"
+                      placeholder="Chọn hoặc nhập Nhóm..."
                     />
-                    <datalist id="dl_groups">
-                      {availableGroups.map((g, i) => (
-                        <option key={i} value={g} />
-                      ))}
-                    </datalist>
+                    <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-slate-400">
+                      <ChevronDown size={14} />
+                    </div>
+                    {/* Custom Dropdown List */}
+                    {showGroupList && filteredGroups.length > 0 && (
+                      <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl max-h-48 overflow-y-auto z-50">
+                        {filteredGroups.map((g, i) => (
+                          <div
+                            key={i}
+                            onClick={() => selectGroup(g)}
+                            className="px-3 py-2 hover:bg-blue-50 cursor-pointer text-sm text-slate-700 border-b border-slate-50 last:border-0"
+                          >
+                            {g}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
-              </div>
-
-              {/* Mode Toggle */}
-              <div className="px-3 py-2 bg-white border-b border-slate-100 shadow-sm shrink-0 flex justify-between items-center z-10">
-                <div className="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase">
-                  {isManualMode ? (
-                    <>
-                      <Edit3 size={12} /> Nhập Thủ Công
-                    </>
-                  ) : (
-                    <>
-                      <Filter size={12} /> Bộ Lọc Tìm Kiếm
-                    </>
-                  )}
-                </div>
+                {/* Clear Filter Button */}
                 <button
-                  onClick={() => setIsManualMode(!isManualMode)}
-                  className={`text-xs px-2 py-1 rounded-md font-semibold transition flex items-center gap-1 ${
-                    isManualMode
-                      ? "bg-blue-100 text-blue-700"
-                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                  }`}
+                  onClick={clearFilters}
+                  className="p-2 bg-red-50 hover:bg-red-100 text-red-500 rounded-lg transition flex items-center justify-center"
+                  title="Xoá bộ lọc"
                 >
-                  {isManualMode ? (
-                    <>
-                      <List size={12} /> Chọn từ list
-                    </>
-                  ) : (
-                    <>
-                      <Plus size={12} /> Nhập tay
-                    </>
-                  )}
+                  <Trash2 size={18} />
                 </button>
               </div>
 
               {/* SELECT FROM LIST */}
-              {!isManualMode && (
-                <>
-                  <div className="p-3 bg-white border-b border-slate-100 shrink-0 space-y-2 z-10">
-                    <div className="grid grid-cols-3 gap-2">
-                      <input
-                        id="ma"
-                        value={filters.ma}
-                        onChange={handleFilterChange}
-                        className="w-full p-2 bg-slate-50 border border-slate-200 rounded text-sm focus:border-blue-500 outline-none uppercase"
-                        placeholder="Mã..."
-                      />
-                      <input
-                        id="style"
-                        value={filters.style}
-                        onChange={handleFilterChange}
-                        className="w-full p-2 bg-slate-50 border border-slate-200 rounded text-sm focus:border-blue-500 outline-none"
-                        placeholder="Style..."
-                      />
-                      <input
-                        id="mau"
-                        value={filters.mau}
-                        onChange={handleFilterChange}
-                        className="w-full p-2 bg-slate-50 border border-slate-200 rounded text-sm focus:border-blue-500 outline-none"
-                        placeholder="Màu..."
-                      />
-                    </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      <input
-                        id="don"
-                        value={filters.don}
-                        onChange={handleFilterChange}
-                        className="w-full p-2 bg-slate-50 border border-slate-200 rounded text-sm focus:border-blue-500 outline-none"
-                        placeholder="Đơn..."
-                      />
-                      <input
-                        id="po"
-                        value={filters.po}
-                        onChange={handleFilterChange}
-                        className="w-full p-2 bg-slate-50 border border-slate-200 rounded text-sm focus:border-blue-500 outline-none uppercase"
-                        placeholder="PO..."
-                      />
-                      <div className="relative">
-                        <div className="absolute inset-y-0 left-0 pl-2 flex items-center pointer-events-none">
-                          <Calendar size={12} className="text-slate-400" />
-                        </div>
-                        <input
-                          id="shipdate"
-                          value={filters.shipdate}
-                          onChange={handleFilterChange}
-                          className="w-full pl-7 pr-2 py-2 bg-slate-50 border border-slate-200 rounded text-sm focus:border-blue-500 outline-none"
-                          placeholder="ShipDate..."
-                        />
-                      </div>
-                    </div>
-                  </div>
+              <div className="p-3 bg-white border-b border-slate-100 shrink-0 space-y-2 z-10">
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    id="style"
+                    value={filters.style}
+                    onChange={handleFilterChange}
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded text-sm focus:border-blue-500 outline-none"
+                    placeholder="Style..."
+                  />
+                  <input
+                    id="mau"
+                    value={filters.mau}
+                    onChange={handleFilterChange}
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded text-sm focus:border-blue-500 outline-none"
+                    placeholder="Màu..."
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    id="don"
+                    value={filters.don}
+                    onChange={handleFilterChange}
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded text-sm focus:border-blue-500 outline-none"
+                    placeholder="Đơn..."
+                  />
+                  <input
+                    id="po"
+                    value={filters.po}
+                    onChange={handleFilterChange}
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded text-sm focus:border-blue-500 outline-none uppercase"
+                    placeholder="PO..."
+                  />
+                </div>
+              </div>
 
-                  <div className="flex-1 overflow-y-auto bg-slate-50 p-2 custom-scrollbar">
-                    {filteredItems.length === 0 ? (
-                      <div className="flex flex-col items-center justify-center h-40 text-slate-400 gap-2">
-                        <Search size={24} className="opacity-20" />
-                        <span className="text-xs">
-                          {isConfigLoading
-                            ? "Đang tải dữ liệu..."
-                            : "Không tìm thấy"}
-                        </span>
-                      </div>
-                    ) : (
-                      <div className="space-y-2 pb-20">
-                        {filteredItems.slice(0, 50).map((item, idx) => {
-                          const diff =
-                            (item.current || 0) - (Number(item.kh) || 0);
-                          return (
-                            <div
-                              key={idx}
-                              onClick={() => handleSelectItem(item)}
-                              className={`bg-white p-3 rounded-lg border cursor-pointer transition-all active:scale-[0.98] ${
-                                selectedItem === item
-                                  ? "border-blue-500 ring-1 ring-blue-500 shadow-md"
-                                  : "border-slate-200 hover:border-blue-300"
-                              }`}
-                            >
-                              <div className="flex justify-between items-start">
-                                <div className="flex-1">
-                                  <div className="flex items-center flex-wrap gap-2 mb-1">
-                                    <span className="font-black text-slate-800 text-lg leading-none">
-                                      {item.style}
-                                    </span>
-                                    <span className="bg-slate-100 text-slate-500 border border-slate-200 px-1.5 py-0.5 rounded text-[10px] font-mono">
-                                      {item.po}
-                                    </span>
-                                  </div>
-                                  <div className="text-xs text-slate-500 font-medium">
-                                    {item.mau} - {item.don}
-                                  </div>
-                                  <div className="mt-1 flex flex-wrap gap-1">
-                                    {item.nhom && (
-                                      <div className="text-[10px] bg-blue-50 text-blue-600 px-1.5 rounded font-medium">
-                                        {item.nhom}
-                                      </div>
-                                    )}
-                                    {item.shipdate && (
-                                      <div className="text-[10px] text-slate-500 font-medium flex items-center gap-1">
-                                        <Calendar size={10} /> {item.shipdate}
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                                <div className="flex flex-col items-end gap-1 pl-2">
-                                  <div
-                                    className="bg-slate-100 text-slate-600 px-2 py-1 rounded text-xs font-bold border border-slate-200 min-w-[60px] text-center"
-                                    title="Kế Hoạch"
-                                  >
-                                    {formatDecimal(item.kh)}
-                                  </div>
-                                  <div
-                                    className={`px-2 py-1 rounded text-xs font-bold border min-w-[60px] text-center ${
-                                      diff > 0
-                                        ? "bg-orange-100 text-orange-700 border-orange-200"
-                                        : "bg-orange-50 text-orange-600 border-orange-100"
-                                    }`}
-                                    title="Chênh lệch"
-                                  >
-                                    {diff > 0 ? "+" : ""}
-                                    {formatDecimal(diff)}
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                        {filteredItems.length > 50 && (
-                          <div className="text-center text-xs text-slate-400 py-2">
-                            Còn {filteredItems.length - 50} kết quả khác...
-                          </div>
-                        )}
-                      </div>
-                    )}
+              <div className="flex-1 overflow-y-auto bg-slate-50 p-2 custom-scrollbar">
+                {filteredItems.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-40 text-slate-400 gap-2">
+                    <Search size={24} className="opacity-20" />
+                    <span className="text-xs">
+                      {isConfigLoading
+                        ? "Đang tải dữ liệu..."
+                        : "Không tìm thấy"}
+                    </span>
                   </div>
-
-                  {selectedItem && (
-                    <div className="bg-white border-t border-slate-200 p-4 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] z-20 animate-in slide-in-from-bottom-10">
-                      <div className="flex justify-between items-center mb-3">
-                        <div className="text-sm font-bold text-blue-700 truncate pr-2">
-                          {selectedItem.style}{" "}
-                          <span className="font-normal text-slate-500 text-xs">
-                            ({selectedItem.mau})
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => setSelectedItem(null)}
-                          className="text-slate-400 hover:text-slate-600"
+                ) : (
+                  <div className="grid grid-cols-2 gap-2 pb-20">
+                    {inputListItems.map((item, idx) => {
+                      const diff = (item.current || 0) - (Number(item.kh) || 0);
+                      return (
+                        <div
+                          key={idx}
+                          onClick={() => handleSelectItem(item)}
+                          onMouseDown={(e) => e.preventDefault()} // Prevent focus loss -> Keep keyboard
+                          className={`bg-white p-2 rounded-lg border cursor-pointer transition-all active:scale-[0.98] h-full flex flex-col justify-between ${
+                            selectedItem === item
+                              ? "border-blue-500 ring-1 ring-blue-500 shadow-md"
+                              : "border-slate-200 hover:border-blue-300"
+                          }`}
                         >
-                          <X size={16} />
-                        </button>
-                      </div>
+                          <div>
+                            <div className="flex justify-between items-start mb-1">
+                              {/* Left: Style */}
+                              <span
+                                className="font-black text-slate-800 text-base truncate flex-1 mr-1"
+                                title={item.style}
+                              >
+                                {item.style}
+                              </span>
+                              {/* Right: PO */}
+                              <span className="text-xs font-bold font-mono bg-slate-100 px-2 py-0.5 rounded text-slate-600 border border-slate-200 shrink-0">
+                                {item.po}
+                              </span>
+                            </div>
 
-                      <div className="grid grid-cols-3 gap-2 mb-3 bg-slate-50 p-2 rounded-lg border border-slate-100">
-                        <div className="text-center border-r border-slate-200">
-                          <div className="text-[10px] text-slate-400 uppercase">
-                            Kế hoạch
+                            {/* Color & Order */}
+                            <div
+                              className="text-xs text-slate-600 mb-2 truncate font-medium"
+                              title={`${item.mau} - ${item.don}`}
+                            >
+                              {item.mau} - {item.don}
+                            </div>
                           </div>
-                          <div className="font-bold text-slate-700">
-                            {formatDecimal(selectedItem.kh)}
-                          </div>
-                        </div>
-                        <div className="text-center border-r border-slate-200">
-                          <div className="text-[10px] text-slate-400 uppercase">
-                            Đã báo
-                          </div>
-                          <div className="font-bold text-blue-600">
-                            {formatDecimal(selectedItem.current)}
-                          </div>
-                        </div>
-                        <div className="text-center">
-                          <div className="text-[10px] text-slate-400 uppercase">
-                            +/- KH
-                          </div>
-                          {(() => {
-                            const diff =
-                              (selectedItem.current || 0) -
-                              (Number(selectedItem.kh) || 0);
-                            return (
+
+                          <div className="flex justify-between items-end mt-1 pt-1 border-t border-slate-50">
+                            {/* Left Bottom: Group & ShipDate */}
+                            <div className="flex flex-col gap-1">
+                              {item.nhom && (
+                                <span className="text-[11px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded truncate max-w-[80px] font-bold border border-blue-100">
+                                  {item.nhom}
+                                </span>
+                              )}
+                              {item.shipdate && (
+                                <span className="text-[9px] text-slate-400 flex items-center">
+                                  <Calendar size={10} className="mr-1" />{" "}
+                                  {item.shipdate}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Right Bottom: KH & Diff - Horizontal Layout */}
+                            <div className="flex items-center gap-1 shrink-0">
                               <div
-                                className={`font-bold ${
-                                  diff > 0 ? "text-red-500" : "text-green-600"
+                                className="bg-slate-100 text-slate-600 px-1.5 py-1 rounded text-[10px] font-bold border border-slate-200 min-w-[45px] text-center"
+                                title="Kế Hoạch"
+                              >
+                                {formatDecimal(item.kh)}
+                              </div>
+                              <div
+                                className={`px-1.5 py-1 rounded text-[10px] font-bold border min-w-[45px] text-center ${
+                                  diff > 0
+                                    ? "bg-orange-100 text-orange-700 border-orange-200"
+                                    : "bg-orange-50 text-orange-600 border-orange-100"
                                 }`}
+                                title="Chênh lệch"
                               >
                                 {diff > 0 ? "+" : ""}
                                 {formatDecimal(diff)}
                               </div>
-                            );
-                          })()}
-                        </div>
-                      </div>
-
-                      <div className="flex gap-2">
-                        <div className="relative flex-1">
-                          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                            <Calculator size={16} className="text-blue-500" />
+                            </div>
                           </div>
-                          <input
-                            ref={qtyInputRef}
-                            type="number"
-                            inputMode="decimal"
-                            value={qty}
-                            onChange={(e) => setQty(e.target.value)}
-                            onKeyDown={(e) => e.key === "Enter" && submitData()}
-                            className="w-full pl-10 pr-10 py-3 bg-slate-50 border border-slate-300 rounded-xl text-xl font-bold text-slate-800 focus:bg-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition"
-                            placeholder="Nhập số lượng..."
-                          />
-                          <button
-                            onClick={handleAutoFill}
-                            className="absolute inset-y-0 right-0 px-3 flex items-center text-orange-500 hover:text-orange-600 hover:bg-orange-50 rounded-r-xl transition"
-                            title="Báo đủ"
-                          >
-                            <Zap size={18} />
-                          </button>
                         </div>
-                        <button
-                          onClick={submitData}
-                          disabled={isSubmitting}
-                          className="bg-blue-600 hover:bg-blue-700 active:scale-[0.95] disabled:opacity-70 text-white font-bold px-5 rounded-xl transition flex items-center justify-center shadow-lg shadow-blue-100"
-                        >
-                          {isSubmitting ? (
-                            <Loader2 className="animate-spin" />
-                          ) : (
-                            <Save size={20} />
-                          )}
-                        </button>
+                      );
+                    })}
+                    {!isFiltering && filteredItems.length > 50 && (
+                      <div className="text-center text-xs text-slate-400 py-2 col-span-2">
+                        Còn {filteredItems.length - 50} kết quả khác... (Lọc để
+                        xem thêm)
                       </div>
-                    </div>
-                  )}
-                </>
-              )}
+                    )}
+                  </div>
+                )}
+              </div>
 
-              {/* MODE 2: MANUAL ENTRY */}
-              {isManualMode && (
-                <div className="flex-1 overflow-y-auto bg-slate-50 p-4 custom-scrollbar">
-                  <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-4">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <label className="text-xs font-semibold text-slate-500 uppercase">
-                          Style
-                        </label>
-                        <input
-                          id="style"
-                          value={manualData.style}
-                          onChange={handleManualChange}
-                          className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-800 uppercase focus:bg-white focus:border-blue-500 outline-none"
-                          placeholder="Nhập Style..."
-                        />
+              {selectedItem && (
+                <div className="bg-white border-t border-slate-200 p-4 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] z-20 animate-in slide-in-from-bottom-10">
+                  <div className="flex justify-between items-center mb-3">
+                    <div className="text-sm font-bold text-blue-700 truncate pr-2">
+                      {selectedItem.style}{" "}
+                      <span className="font-normal text-slate-500 text-xs">
+                        ({selectedItem.mau})
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setSelectedItem(null)}
+                      className="text-slate-400 hover:text-slate-600"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+
+                  {/* STATS ROW: KH vs ACTUAL */}
+                  <div className="grid grid-cols-3 gap-2 mb-3 bg-slate-50 p-2 rounded-lg border border-slate-100">
+                    <div className="text-center border-r border-slate-200">
+                      <div className="text-[10px] text-slate-400 uppercase">
+                        Kế hoạch
                       </div>
-                      <div className="space-y-1">
-                        <label className="text-xs font-semibold text-slate-500 uppercase">
-                          Màu Sắc
-                        </label>
-                        <input
-                          id="mau"
-                          value={manualData.mau}
-                          onChange={handleManualChange}
-                          className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:border-blue-500 outline-none"
-                          placeholder="Nhập Màu..."
-                        />
+                      <div className="font-bold text-slate-700">
+                        {formatDecimal(selectedItem.kh)}
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <label className="text-xs font-semibold text-slate-500 uppercase">
-                          Đơn Hàng
-                        </label>
-                        <input
-                          id="don"
-                          value={manualData.don}
-                          onChange={handleManualChange}
-                          className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:border-blue-500 outline-none"
-                          placeholder="Nhập Đơn..."
-                        />
+                    <div className="text-center border-r border-slate-200">
+                      <div className="text-[10px] text-slate-400 uppercase">
+                        Đã báo
                       </div>
-                      <div className="space-y-1">
-                        <label className="text-xs font-semibold text-slate-500 uppercase">
-                          Mã Hàng
-                        </label>
-                        <input
-                          id="ma"
-                          value={manualData.ma}
-                          onChange={handleManualChange}
-                          className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:border-blue-500 outline-none uppercase"
-                          placeholder="Nhập Mã..."
-                        />
+                      <div className="font-bold text-blue-600">
+                        {formatDecimal(selectedItem.current)}
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <label className="text-xs font-semibold text-slate-500 uppercase">
-                          PO
-                        </label>
-                        <input
-                          id="po"
-                          value={manualData.po}
-                          onChange={handleManualChange}
-                          className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:border-blue-500 outline-none uppercase"
-                          placeholder="Nhập PO..."
-                        />
+                    <div className="text-center">
+                      <div className="text-[10px] text-slate-400 uppercase">
+                        +/- KH
                       </div>
-                      <div className="space-y-1">
-                        <label className="text-xs font-semibold text-slate-500 uppercase">
-                          ShipDate
-                        </label>
-                        <input
-                          id="shipdate"
-                          value={manualData.shipdate}
-                          onChange={handleManualChange}
-                          className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:bg-white focus:border-blue-500 outline-none"
-                          placeholder="Ngày giao..."
-                        />
-                      </div>
+                      {(() => {
+                        const diff =
+                          (selectedItem.current || 0) -
+                          (Number(selectedItem.kh) || 0);
+                        return (
+                          <div
+                            className={`font-bold ${
+                              diff > 0 ? "text-red-500" : "text-green-600"
+                            }`}
+                          >
+                            {diff > 0 ? "+" : ""}
+                            {formatDecimal(diff)}
+                          </div>
+                        );
+                      })()}
                     </div>
-                    <div className="h-px bg-slate-100 w-full my-2"></div>
-                    <div className="space-y-1">
-                      <label className="text-xs font-bold text-blue-600 uppercase">
-                        Số Lượng
-                      </label>
-                      <div className="relative">
-                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                          <Calculator size={16} className="text-slate-400" />
-                        </div>
-                        <input
-                          type="number"
-                          id="qty"
-                          inputMode="decimal"
-                          value={manualData.qty}
-                          onChange={handleManualChange}
-                          className="w-full pl-10 pr-4 py-3 bg-blue-50/50 border-2 border-blue-100 rounded-xl text-2xl font-bold text-slate-800 focus:bg-white focus:border-blue-500 outline-none transition"
-                          placeholder="0"
-                        />
+                  </div>
+
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <div className="absolute top-1 left-2 text-[10px] font-bold text-slate-400">
+                        NK:{" "}
+                        {formatDecimal(
+                          (parseFloat(qty) || 0) - (selectedItem.current || 0)
+                        )}
                       </div>
+                      <input
+                        ref={qtyInputRef}
+                        type="number"
+                        inputMode="decimal"
+                        value={qty}
+                        onChange={(e) => setQty(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && submitData(e)}
+                        className="w-full pl-4 pr-10 pt-5 pb-2 bg-slate-50 border border-slate-300 rounded-xl text-xl font-bold text-slate-800 focus:bg-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition"
+                        placeholder="Nhập tổng luỹ kế..."
+                      />
+                      <button
+                        onClick={handleAutoFill}
+                        onMouseDown={(e) => e.preventDefault()}
+                        className="absolute inset-y-0 right-0 px-3 flex items-center text-orange-500 hover:text-orange-600 hover:bg-orange-50 rounded-r-xl transition"
+                        title="Báo đủ"
+                      >
+                        <Zap size={18} />
+                      </button>
                     </div>
                     <button
                       onClick={submitData}
+                      onMouseDown={(e) => e.preventDefault()}
                       disabled={isSubmitting}
-                      className="w-full bg-blue-600 hover:bg-blue-700 active:scale-[0.98] disabled:opacity-70 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-blue-200 transition flex justify-center items-center gap-2"
+                      className="bg-blue-600 hover:bg-blue-700 active:scale-[0.95] disabled:opacity-70 text-white font-bold px-5 rounded-xl transition flex items-center justify-center shadow-lg shadow-blue-100"
                     >
                       {isSubmitting ? (
                         <Loader2 className="animate-spin" />
                       ) : (
-                        <span>LƯU DỮ LIỆU</span>
+                        <Save size={20} />
                       )}
                     </button>
                   </div>
@@ -1162,34 +1088,29 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Custom Report Header - NEW LAYOUT (Grid Percentage) */}
-                {/* Order: Style(18) | Mau(10) | PO(28) | Ship(14) | Nhom(18) | Qty(12) */}
-                <div className="grid grid-cols-[20%_12%_24%_16%_14%_14%] gap-0.5 px-2 py-2 bg-slate-100 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider text-center">
+                {/* Custom Report Header - Updated Layout for better fit */}
+                {/* Style: 20%, Màu: 12%, PO: 24%, Ship: 16%, Nhóm: 14%, Qty: 14% */}
+                <div className="grid grid-cols-[18%_10%_12%_24%_12%_12%_12%] gap-0.5 px-2 py-2 bg-slate-100 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider text-center">
                   <div className="text-left pl-1">Style</div>
                   <div>Màu</div>
+                  <div>Đơn</div>
                   <div>PO</div>
-                  <div>Ship</div>
                   <div>Nhóm</div>
+                  <div>NK</div>
                   <div className="text-right pr-1">Luỹ Kế</div>
                 </div>
 
                 <div className="overflow-y-auto h-full pb-20 divide-y divide-slate-100 bg-white custom-scrollbar">
-                  {(reportFilterMa
-                    ? reportData.filter((item) => item.ma === reportFilterMa)
-                    : reportData
-                  ).length === 0 && !loadingReport ? (
+                  {reportList.length === 0 && !loadingReport ? (
                     <div className="flex flex-col items-center justify-center h-40 text-slate-400 gap-2">
                       <Search size={32} className="opacity-20" />
                       <span className="text-xs">Chưa có dữ liệu hiển thị</span>
                     </div>
                   ) : (
-                    (reportFilterMa
-                      ? reportData.filter((item) => item.ma === reportFilterMa)
-                      : reportData
-                    ).map((item, idx) => (
+                    reportList.map((item, idx) => (
                       <div
                         key={idx}
-                        className="grid grid-cols-[20%_12%_24%_16%_14%_14%] gap-0.5 px-2 py-2.5 text-xs hover:bg-slate-50 transition items-center border-b border-slate-50"
+                        className="grid grid-cols-[18%_10%_12%_24%_12%_12%_12%] gap-0.5 px-2 py-2.5 text-xs hover:bg-slate-50 transition items-center border-b border-slate-50"
                       >
                         {/* Style */}
                         <div className="text-left font-bold text-slate-800 break-words leading-tight pl-1">
@@ -1199,16 +1120,16 @@ export default function App() {
                         <div className="text-center text-slate-600 break-words leading-tight text-[11px]">
                           {item.mau}
                         </div>
+                        {/* Đơn */}
+                        <div className="text-center text-slate-600 break-words leading-tight text-[11px]">
+                          {item.don}
+                        </div>
                         {/* PO - Big & Bold */}
                         <div
                           className="text-center text-blue-800 font-bold text-xs sm:text-sm truncate"
                           title={item.po}
                         >
                           {item.po}
-                        </div>
-                        {/* ShipDate */}
-                        <div className="text-center text-slate-500 font-mono text-[10px]">
-                          {item.shipdate || "-"}
                         </div>
                         {/* Nhóm */}
                         <div className="text-center">
@@ -1220,7 +1141,11 @@ export default function App() {
                             "-"
                           )}
                         </div>
-                        {/* Số lượng */}
+                        {/* NK - Qty Entered */}
+                        <div className="text-center font-bold text-slate-700 text-sm">
+                          {formatDecimal(item.nk)}
+                        </div>
+                        {/* Luỹ Kế - Total */}
                         <div className="text-right font-bold text-blue-700 text-sm pr-1">
                           {formatDecimal(item.qty)}
                         </div>
@@ -1231,12 +1156,12 @@ export default function App() {
               </div>
               <div className="p-3 bg-white border-t border-slate-200 shrink-0 flex justify-between items-center shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-10">
                 <span className="text-xs font-bold text-slate-500 uppercase">
-                  Tổng số lượng
+                  Tổng NK Ngày
                 </span>
                 <span className="text-xl font-bold text-blue-600">
                   {formatDecimal(
-                    displayedReportData.reduce(
-                      (acc, curr) => acc + (parseFloat(curr.qty) || 0),
+                    reportList.reduce(
+                      (acc, curr) => acc + (parseFloat(curr.nk) || 0),
                       0
                     )
                   )}
