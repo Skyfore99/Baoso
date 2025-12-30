@@ -311,8 +311,6 @@ export default function App() {
     shipdate: "",
     style: "",
   });
-  // Add debounced filters state
-  const [debouncedFilters, setDebouncedFilters] = useState(filters);
 
   // Removed manualData state
   const [persistentGroup, setPersistentGroup] = useState("");
@@ -391,53 +389,31 @@ export default function App() {
     return () => clearInterval(interval);
   }, [connectionStatus, apiUrl]);
 
-  // Debounce logic for filters: Style = 2000ms, Others = 500ms
-  useEffect(() => {
-    const isStyleChanged = filters.style !== debouncedFilters.style;
-    const delay = isStyleChanged ? 2000 : 500;
-
-    const handler = setTimeout(() => {
-      setDebouncedFilters(filters);
-    }, delay);
-
-    return () => {
-      clearTimeout(handler);
-    };
-  }, [filters]);
-
   // Reset showAllInput when filters change
   useEffect(() => {
     setShowAllInput(false);
   }, [filters]);
 
-  // OPTIMIZATION: Filter using useMemo and debounced filters
+  // OPTIMIZATION: Removed Debounce - Filter directly using `filters`
   const filteredItems = useMemo(() => {
     if (masterItems.length === 0) return [];
     return masterItems.filter((item) => {
       return (
-        (!debouncedFilters.ma ||
-          item.ma.toLowerCase().includes(debouncedFilters.ma.toLowerCase())) &&
-        (!debouncedFilters.style ||
-          item.style
-            .toLowerCase()
-            .includes(debouncedFilters.style.toLowerCase())) &&
-        (!debouncedFilters.mau ||
-          item.mau
-            .toLowerCase()
-            .includes(debouncedFilters.mau.toLowerCase())) &&
-        (!debouncedFilters.don ||
-          item.don
-            .toLowerCase()
-            .includes(debouncedFilters.don.toLowerCase())) &&
-        (!debouncedFilters.po ||
-          item.po.toLowerCase().includes(debouncedFilters.po.toLowerCase())) &&
-        (!debouncedFilters.shipdate ||
-          item.shipdate
-            .toLowerCase()
-            .includes(debouncedFilters.shipdate.toLowerCase()))
+        (!filters.ma ||
+          item.ma.toLowerCase().includes(filters.ma.toLowerCase())) &&
+        (!filters.style ||
+          item.style.toLowerCase().includes(filters.style.toLowerCase())) &&
+        (!filters.mau ||
+          item.mau.toLowerCase().includes(filters.mau.toLowerCase())) &&
+        (!filters.don ||
+          item.don.toLowerCase().includes(filters.don.toLowerCase())) &&
+        (!filters.po ||
+          item.po.toLowerCase().includes(filters.po.toLowerCase())) &&
+        (!filters.shipdate ||
+          item.shipdate.toLowerCase().includes(filters.shipdate.toLowerCase()))
       );
     });
-  }, [debouncedFilters, masterItems]);
+  }, [filters, masterItems]);
 
   // Input List Items
   const itemsToDisplay = showAllInput
@@ -699,7 +675,7 @@ export default function App() {
 
         {/* CONFIG PANEL */}
         <div
-          className={`bg-slate-50 border-b border-slate-200 p-4 absolute top-[64px] left-0 w-full z-20 transition-all duration-300 shadow-lg ${
+          className={`bg-slate-50 border-b border-slate-200 p-4 absolute top-[64px] left-0 w-full z-30 transition-all duration-300 shadow-lg ${
             showConfig
               ? "translate-y-0"
               : "-translate-y-full opacity-0 pointer-events-none"
