@@ -31,14 +31,24 @@ import {
   Zap,
   Trash2,
   ChevronDown,
+  Database, // ⚡ NEW: Icon cho cache
 } from "lucide-react";
 
 // --- CONFIG ---
 const HARDCODED_API_URL = "";
 
+// ⚡ CACHE KEYS - NEW
+const CACHE_KEYS = {
+  ITEMS: "bao_so_cached_items",
+  TIME: "bao_so_cache_time",
+  API_URL: "gas_api_url",
+};
+
 // --- BACKEND SCRIPT TEMPLATE ---
 const BACKEND_SCRIPT = `const SHEET_DATA = "Data";
 const SHEET_CONFIG = "Config";
+const CACHE_KEY = "config_v1";
+const CACHE_TTL = 300; // 5 phút
 
 function doPost(e) {
   const lock = LockService.getScriptLock();
@@ -55,30 +65,22 @@ function doPost(e) {
         sheet.appendRow(["Thời gian", "PO", "Đơn hàng", "Mã hàng", "Style", "Màu", "ShipDate", "Nhóm", "Số lượng"]); 
       }
       
-      const qty = parseFloat(request.qty); // Đây là số NK (chênh lệch)
+      const qty = parseFloat(request.qty);
       const limit = parseFloat(request.limit) || 0; 
-      
-      // Tính lại tổng hiện tại trong sheet để kiểm tra KH
       const currentTotal = getCumulative(sheet, request.po, request.ma, request.mau, request.style, request.don);
       const newTotal = parseFloat((currentTotal + qty).toFixed(2));
       
       if (limit > 0 && (newTotal > limit)) {
-        return responseJSON({ 
-          status: "error", 
-          message: "Vượt KH! (" + newTotal + "/" + limit + ")" 
-        });
+        return responseJSON({ status: "error", message: "Vượt KH! (" + newTotal + "/" + limit + ")" });
       }
       
-      sheet.appendRow([
-        new Date(), "'" + request.po, request.don, request.ma, request.style, request.mau, request.shipdate, request.nhom, qty
-      ]);
-
+      sheet.appendRow([new Date(), "'" + request.po, request.don, request.ma, request.style, request.mau, request.shipdate, request.nhom, qty]);
       updateConfigSheet(doc, request, newTotal);
-      
+      CacheService.getScriptCache().remove(CACHE_KEY); // Clear cache
       return responseJSON({ status: "success", total: newTotal, msg: request.style + ' (' + request.mau + ')' });
     }
     else if (action === "get_config") {
-      return handleGetConfig(doc);
+      return handleGetConfigCached(doc);
     }
     else if (action === "get_summary") {
       let sheet = doc.getSheetByName(SHEET_DATA);
@@ -86,6 +88,18 @@ function doPost(e) {
     }
   } catch (error) { return responseJSON({ status: "error", message: error.toString() }); } 
   finally { lock.releaseLock(); }
+}
+
+function handleGetConfigCached(doc) {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get(CACHE_KEY);
+  if (cached) return responseJSON(JSON.parse(cached));
+  const result = handleGetConfig(doc);
+  try {
+    const obj = JSON.parse(result.getContent());
+    if (obj.status === "success") cache.put(CACHE_KEY, JSON.stringify(obj), CACHE_TTL);
+  } catch(e) {}
+  return result;
 }
 
 function updateConfigSheet(doc, request, newTotal) {
@@ -101,7 +115,6 @@ function updateConfigSheet(doc, request, newTotal) {
                    String(configValues[i][2]) === String(request.mau) &&
                    String(configValues[i][3]) === String(request.don) && 
                    String(configValues[i][4]) === String(request.po)) {
-                   
                    if (request.nhom) sheetConfig.getRange(i + 2, 8).setValue(request.nhom);
                    sheetConfig.getRange(i + 2, 9).setValue(newTotal);
                    break; 
@@ -114,13 +127,10 @@ function updateConfigSheet(doc, request, newTotal) {
 
 function handleGetConfig(doc) {
   let sheetConfig = doc.getSheetByName(SHEET_CONFIG);
-  
   if (!sheetConfig) return responseJSON({ status: "success", items: [] });
   const lastRow = sheetConfig.getLastRow();
   if (lastRow < 2) return responseJSON({ status: "success", items: [] });
-  
   const configData = sheetConfig.getRange(2, 1, lastRow - 1, 9).getValues();
-  
   let sheetData = doc.getSheetByName(SHEET_DATA);
   const totals = {};
   if (sheetData && sheetData.getLastRow() >= 2) {
@@ -132,29 +142,18 @@ function handleGetConfig(doc) {
       totals[key] = (totals[key] || 0) + (Number(dataValues[i][8]) || 0);
     }
   }
-  
   const items = configData.map(r => {
     let shipdate = r[5];
     if (shipdate instanceof Date) shipdate = Utilities.formatDate(shipdate, Session.getScriptTimeZone(), "dd/MM/yyyy");
     else shipdate = String(shipdate || "");
-
     const po = String(r[4]); const ma = String(r[0]); const mau = String(r[2]); const style = String(r[1]); const don = String(r[3]);
     const key = po + "_" + ma + "_" + mau + "_" + style + "_" + don;
-
-    return {
-      ma: ma, style: style, mau: mau, don: don, po: po,
-      shipdate: shipdate,
-      kh: Number(r[6]) || 0,        
-      nhom: String(r[7] || ""),     
-      current: totals[key] || 0    
-    };
+    return { ma, style, mau, don, po, shipdate, kh: Number(r[6]) || 0, nhom: String(r[7] || ""), current: totals[key] || 0 };
   }).filter(item => item.ma);
-  
   return responseJSON({ status: "success", items: items });
 }
 
 function responseJSON(data) { return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON); }
-
 function getCumulative(sheet, po, ma, mau, style, don) {
   const data = sheet.getDataRange().getValues();
   let total = 0;
@@ -171,66 +170,36 @@ function getCumulative(sheet, po, ma, mau, style, don) {
 function getDailyData(sheet, dateString, timezone) {
   if (!sheet) return [];
   const data = sheet.getDataRange().getValues();
-  const results = [];
-  
-  // Cache totals map (Cumulative)
-  const totalsMap = {}; 
-  // Cache daily NK map (Sum of NK for the day)
-  const dailyNkMap = {};
-
+  const results = [], totalsMap = {}, dailyNkMap = {};
   for (let i = 1; i < data.length; i++) {
      let p = String(data[i][1]); if(p.startsWith("'")) p = p.substring(1);
      let key = p + "_" + data[i][3] + "_" + data[i][5] + "_" + data[i][4] + "_" + data[i][2];
      const val = Number(data[i][8]) || 0;
-     
-     // Calc Cumulative
      totalsMap[key] = (totalsMap[key] || 0) + val;
-     
-     // Calc Daily NK
      const rowDate = new Date(data[i][0]);
      const rowDateStr = Utilities.formatDate(rowDate, timezone, "yyyy-MM-dd");
-     if (rowDateStr === dateString) {
-         dailyNkMap[key] = (dailyNkMap[key] || 0) + val;
-     }
+     if (rowDateStr === dateString) dailyNkMap[key] = (dailyNkMap[key] || 0) + val;
   }
-  
   const seenKeys = {};
-
   for (let i = data.length - 1; i >= 1; i--) {
     const rowDate = new Date(data[i][0]);
     const rowDateStr = Utilities.formatDate(rowDate, timezone, "yyyy-MM-dd");
-    
     if (rowDateStr === dateString) {
       let rowPO = String(data[i][1]);
       if(rowPO.startsWith("'")) rowPO = rowPO.substring(1);
-      
       let key = rowPO + "_" + data[i][3] + "_" + data[i][5] + "_" + data[i][4] + "_" + data[i][2];
-
       if (!seenKeys[key]) {
         seenKeys[key] = true;
-        
         let rowShip = data[i][6];
         if (rowShip instanceof Date) rowShip = Utilities.formatDate(rowShip, Session.getScriptTimeZone(), "dd/MM/yyyy");
-        
-        // entryQty là tổng NK trong ngày (gộp)
-        let entryQty = dailyNkMap[key] || 0;
-
-        results.push({ 
-            time: Utilities.formatDate(rowDate, timezone, "HH:mm"), 
-            po: rowPO, don: data[i][2], ma: data[i][3], style: data[i][4], mau: data[i][5], 
-            shipdate: rowShip, nhom: data[i][7],
-            nk: entryQty, 
-            qty: totalsMap[key] || 0 
-        });
+        results.push({ time: Utilities.formatDate(rowDate, timezone, "HH:mm"), po: rowPO, don: data[i][2], ma: data[i][3], style: data[i][4], mau: data[i][5], shipdate: rowShip, nhom: data[i][7], nk: dailyNkMap[key] || 0, qty: totalsMap[key] || 0 });
       }
     }
   }
   return results;
-}
-`;
+}`;
 
 // --- COMPONENTS ---
-
 // @ts-ignore
 const Toast = ({ msg, type, show, onClose }) => {
   useEffect(() => {
@@ -303,6 +272,12 @@ export default function App() {
   const [isManualMode, setIsManualMode] = useState(false);
   const [showAllInput, setShowAllInput] = useState(false);
 
+  // ⚡ NEW: Cache status state
+  const [cacheStatus, setCacheStatus] = useState({
+    hasCache: false,
+    cacheTime: null,
+  });
+
   const [filters, setFilters] = useState({
     ma: "",
     mau: "",
@@ -312,9 +287,8 @@ export default function App() {
     style: "",
   });
 
-  // Removed manualData state
   const [persistentGroup, setPersistentGroup] = useState("");
-  const [showGroupList, setShowGroupList] = useState(false); // New state for dropdown
+  const [showGroupList, setShowGroupList] = useState(false);
   const [qty, setQty] = useState("");
 
   const [availableGroups, setAvailableGroups] = useState([]);
@@ -323,11 +297,14 @@ export default function App() {
   );
   const [reportData, setReportData] = useState([]);
   const [reportFilterMa, setReportFilterMa] = useState("");
+  const [reportFilterPo, setReportFilterPo] = useState(""); // ⚡ NEW: PO filter
+
+  // ⚡ NEW: Report cache by date
+  const [reportCache, setReportCache] = useState({});
 
   const [toast, setToast] = useState({ show: false, msg: "", type: "info" });
   const qtyInputRef = useRef(null);
 
-  // Define isFiltering to fix ReferenceError
   const isFiltering = Object.values(filters).some(
     (f) => f && String(f).trim() !== ""
   );
@@ -346,7 +323,6 @@ export default function App() {
       document.head.appendChild(link);
     }
     const style = document.createElement("style");
-    // Add smoothing styles
     style.innerHTML = `
       html, body { height: 100%; overflow: hidden; }
       body { font-family: 'Inter', sans-serif; overscroll-behavior: none; } 
@@ -361,13 +337,17 @@ export default function App() {
     `;
     document.head.appendChild(style);
 
-    const savedUrl = localStorage.getItem("gas_api_url") || HARDCODED_API_URL;
+    const savedUrl =
+      localStorage.getItem(CACHE_KEYS.API_URL) || HARDCODED_API_URL;
     if (savedUrl) {
       setApiUrl(savedUrl);
       loadConfig(savedUrl, false);
     } else {
       setShowConfig(true);
     }
+
+    // ⚡ NEW: Check cache status on mount
+    checkCacheStatus();
   }, []);
 
   useEffect(() => {
@@ -389,12 +369,10 @@ export default function App() {
     return () => clearInterval(interval);
   }, [connectionStatus, apiUrl]);
 
-  // Reset showAllInput when filters change
   useEffect(() => {
     setShowAllInput(false);
   }, [filters]);
 
-  // OPTIMIZATION: Removed Debounce - Filter directly using `filters`
   const filteredItems = useMemo(() => {
     if (masterItems.length === 0) return [];
     return masterItems.filter((item) => {
@@ -415,7 +393,6 @@ export default function App() {
     });
   }, [filters, masterItems]);
 
-  // Input List Items
   const itemsToDisplay = showAllInput
     ? filteredItems
     : filteredItems.slice(0, 50);
@@ -444,25 +421,101 @@ export default function App() {
     }
   };
 
+  // ⚡ NEW: Check cache status helper
+  const checkCacheStatus = () => {
+    try {
+      const cached = localStorage.getItem(CACHE_KEYS.ITEMS);
+      const cacheTime = localStorage.getItem(CACHE_KEYS.TIME);
+
+      if (cached && cacheTime) {
+        setCacheStatus({
+          hasCache: true,
+          cacheTime: new Date(parseInt(cacheTime)),
+        });
+      } else {
+        setCacheStatus({ hasCache: false, cacheTime: null });
+      }
+    } catch (e) {
+      setCacheStatus({ hasCache: false, cacheTime: null });
+    }
+  };
+
+  // ⚡ NEW: Clear cache function
+  const clearCache = () => {
+    try {
+      localStorage.removeItem(CACHE_KEYS.ITEMS);
+      localStorage.removeItem(CACHE_KEYS.TIME);
+      setCacheStatus({ hasCache: false, cacheTime: null });
+      showToast("Đã xóa cache", "success");
+      // Reload data from server
+      if (apiUrl) loadConfig(apiUrl, false);
+    } catch (e) {
+      showToast("Lỗi xóa cache", "error");
+    }
+  };
+
   const saveConfig = () => {
     if (!apiUrl.trim()) return showToast("Vui lòng nhập URL", "error");
-    localStorage.setItem("gas_api_url", apiUrl);
+    localStorage.setItem(CACHE_KEYS.API_URL, apiUrl);
     showToast("Đã lưu cấu hình", "success");
     setShowConfig(false);
     loadConfig(apiUrl, false);
   };
 
+  // ⚡ OPTIMIZED: Load config with localStorage cache
   const loadConfig = async (url, silent = false) => {
     const targetUrl = url || apiUrl;
     if (!targetUrl) return;
+
+    // ⚡ STEP 1: Load from cache first (instant display)
+    if (!silent) {
+      try {
+        const cached = localStorage.getItem(CACHE_KEYS.ITEMS);
+        const cacheTime = localStorage.getItem(CACHE_KEYS.TIME);
+
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          setMasterItems(parsed);
+          setConnectionStatus("connected");
+
+          if (cacheTime) {
+            const cacheDate = new Date(parseInt(cacheTime));
+            setLastSync(cacheDate);
+          }
+
+          console.log("✅ Loaded from cache:", parsed.length, "items");
+        }
+      } catch (e) {
+        console.warn("⚠️ Cache load error:", e);
+      }
+    }
+
+    // ⚡ STEP 2: Fetch from server (update in background)
     if (!silent) {
       setIsConfigLoading(true);
       setSyncStatus("syncing");
     }
+
     try {
       const res = await fetchGAS(targetUrl, { action: "get_config" });
       if (res.status === "success") {
         setMasterItems(res.items || []);
+
+        // ⚡ Save to localStorage
+        if (!silent) {
+          try {
+            localStorage.setItem(
+              CACHE_KEYS.ITEMS,
+              JSON.stringify(res.items || [])
+            );
+            localStorage.setItem(CACHE_KEYS.TIME, Date.now().toString());
+            checkCacheStatus();
+            console.log("💾 Saved to cache:", res.items?.length, "items");
+          } catch (e) {
+            console.warn("⚠️ Cache save error:", e);
+          }
+        }
+
         if (!silent) {
           setSyncStatus("complete");
           setTimeout(() => setSyncStatus("idle"), 3000);
@@ -492,18 +545,17 @@ export default function App() {
 
   const handleSelectItem = (item) => {
     setSelectedItem(item);
+    setQty(""); // ⚡ RESET input khi chọn item khác
     if (item.nhom) {
       setPersistentGroup(item.nhom);
     }
-    setTimeout(() => {
-      if (qtyInputRef.current) qtyInputRef.current.focus();
-    }, 100);
+    // ⚡ REMOVED: Auto-focus causes keyboard issues on mobile
+    // Only focus manually when user clicks input
   };
 
   const handleAutoFill = (e) => {
     e.preventDefault();
     if (!selectedItem) return;
-    // Set qty to KH value directly
     const target = Number(selectedItem.kh);
     if (target > 0) {
       setQty(String(target));
@@ -522,17 +574,14 @@ export default function App() {
     let inputQty = 0;
 
     if (isManualMode) {
-      // Logic for manual mode kept as fallback
       return;
     } else {
       if (!selectedItem) return showToast("Chưa chọn mã", "error");
       if (!qty) return showToast("Chưa nhập SL", "error");
 
-      // Calculate INCREMENT here!
-      // qty input is the New Cumulative
       const newCumulative = parseFloat(qty);
       const currentCumulative = selectedItem.current || 0;
-      inputQty = newCumulative - currentCumulative; // This is the value to save to Data sheet
+      inputQty = newCumulative - currentCumulative;
 
       payload = {
         ...payload,
@@ -543,12 +592,11 @@ export default function App() {
         mau: selectedItem.mau,
         shipdate: selectedItem.shipdate,
         limit: selectedItem.kh,
-        qty: inputQty, // Send increment
+        qty: inputQty,
       };
     }
 
-    // Optimistic Update: Update UI with the new Cumulative value
-    const newTotal = parseFloat(qty); // The value entered
+    const newTotal = parseFloat(qty);
     const updatedItem = { ...selectedItem, current: newTotal };
     setSelectedItem(updatedItem);
     setMasterItems((prev) =>
@@ -567,17 +615,48 @@ export default function App() {
       .catch(() => showToast("Lỗi mạng!", "error"));
   };
 
-  const fetchReport = async () => {
+  const fetchReport = async (forceRefresh = false) => {
     if (!apiUrl) return;
+
+    // ⚡ Check cache first
+    if (!forceRefresh && reportCache[reportDate]) {
+      console.log("✅ Loaded report from cache:", reportDate);
+      setReportData(reportCache[reportDate]);
+      setReportFilterMa("");
+      setReportFilterPo("");
+      return;
+    }
+
     setLoadingReport(true);
     setReportFilterMa("");
+    setReportFilterPo("");
     try {
       const res = await fetchGAS(apiUrl, {
         action: "get_summary",
         date: reportDate,
       });
       if (res.status === "success") {
+        // ⚡ DEBUG: Check NK values
+        console.log("📊 Report data from backend:", {
+          total: res.data.length,
+          sample: res.data.slice(0, 3), // First 3 items
+          hasNK: res.data.some((item) => item.nk > 0),
+        });
+
         setReportData(res.data);
+
+        // ⚡ Save to cache
+        setReportCache((prev) => ({
+          ...prev,
+          [reportDate]: res.data,
+        }));
+
+        console.log(
+          "💾 Saved report to cache:",
+          reportDate,
+          res.data.length,
+          "items"
+        );
       }
     } catch (e) {
       showToast("Lỗi tải báo cáo", "error");
@@ -586,12 +665,31 @@ export default function App() {
     }
   };
 
-  const uniqueReportMas = [
-    ...new Set(reportData.map((item) => item.ma).filter(Boolean)),
+  // ⚡ UPDATED: Cascade filter - chỉ hiển thị options còn available
+  const availableReportMas = [
+    ...new Set(
+      reportData
+        .filter((item) => !reportFilterPo || String(item.po) === reportFilterPo)
+        .map((item) => String(item.ma || ""))
+        .filter(Boolean)
+    ),
   ];
-  const displayedReportData = reportFilterMa
-    ? reportData.filter((item) => item.ma === reportFilterMa)
-    : reportData;
+
+  const availableReportPos = [
+    ...new Set(
+      reportData
+        .filter((item) => !reportFilterMa || String(item.ma) === reportFilterMa)
+        .map((item) => String(item.po || ""))
+        .filter(Boolean)
+    ),
+  ].sort((a, b) => a.localeCompare(b));
+
+  // ⚡ Support both filters
+  const displayedReportData = reportData.filter((item) => {
+    const matchMa = !reportFilterMa || String(item.ma) === reportFilterMa;
+    const matchPo = !reportFilterPo || String(item.po) === reportFilterPo;
+    return matchMa && matchPo;
+  });
   const copyCode = () =>
     navigator.clipboard
       .writeText(BACKEND_SCRIPT)
@@ -673,7 +771,7 @@ export default function App() {
           </div>
         </header>
 
-        {/* CONFIG PANEL */}
+        {/* CONFIG PANEL - ⚡ UPDATED with cache controls */}
         <div
           className={`bg-slate-50 border-b border-slate-200 p-4 absolute top-[64px] left-0 w-full z-30 transition-all duration-300 shadow-lg ${
             showConfig
@@ -724,6 +822,27 @@ export default function App() {
               <RotateCcw size={16} />
             </button>
           </div>
+
+          {/* ⚡ NEW: Cache Status & Clear Button */}
+          {cacheStatus.hasCache && (
+            <div className="mt-3 p-2 bg-blue-50 border border-blue-100 rounded-lg flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs text-blue-700">
+                <Database size={14} />
+                <span>
+                  Cache: {cacheStatus.cacheTime?.toLocaleTimeString()}
+                  <span className="text-blue-500 ml-1">
+                    ({masterItems.length} items)
+                  </span>
+                </span>
+              </div>
+              <button
+                onClick={clearCache}
+                className="text-xs text-red-600 hover:text-red-700 font-medium flex items-center gap-1"
+              >
+                <Trash2 size={12} /> Xóa
+              </button>
+            </div>
+          )}
         </div>
 
         {/* TABS */}
@@ -777,7 +896,6 @@ export default function App() {
                     <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-slate-400">
                       <ChevronDown size={14} />
                     </div>
-                    {/* Custom Dropdown List */}
                     {showGroupList && filteredGroups.length > 0 && (
                       <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl max-h-48 overflow-y-auto z-50">
                         {filteredGroups.map((g, i) => (
@@ -793,7 +911,6 @@ export default function App() {
                     )}
                   </div>
                 </div>
-                {/* Clear Filter Button */}
                 <button
                   onClick={clearFilters}
                   className="p-2 bg-red-50 hover:bg-red-100 text-red-500 rounded-lg transition flex items-center justify-center"
@@ -831,6 +948,9 @@ export default function App() {
                   />
                   <input
                     id="po"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
                     value={filters.po}
                     onChange={handleFilterChange}
                     className="w-full p-2 bg-slate-50 border border-slate-200 rounded text-sm focus:border-blue-500 outline-none uppercase"
@@ -857,7 +977,7 @@ export default function App() {
                         <div
                           key={idx}
                           onClick={() => handleSelectItem(item)}
-                          onMouseDown={(e) => e.preventDefault()} // Prevent focus loss -> Keep keyboard
+                          onMouseDown={(e) => e.preventDefault()}
                           className={`bg-white p-2 rounded-lg border cursor-pointer transition-all active:scale-[0.98] h-full flex flex-col justify-between ${
                             selectedItem === item
                               ? "border-blue-500 ring-1 ring-blue-500 shadow-md"
@@ -866,7 +986,6 @@ export default function App() {
                         >
                           <div>
                             <div className="flex justify-between items-start mb-1">
-                              {/* Left: Style & PO */}
                               <div className="flex items-center gap-1 min-w-0 flex-1">
                                 <span
                                   className="font-black text-slate-800 text-base truncate flex-1 mr-1"
@@ -880,7 +999,6 @@ export default function App() {
                               </span>
                             </div>
 
-                            {/* Color & Order */}
                             <div
                               className="text-xs text-slate-600 mb-2 truncate font-medium"
                               title={`${item.mau} - ${item.don}`}
@@ -890,7 +1008,6 @@ export default function App() {
                           </div>
 
                           <div className="flex justify-between items-end mt-1 pt-1 border-t border-slate-50">
-                            {/* Left Bottom: Group & ShipDate */}
                             <div className="flex flex-col gap-1">
                               {item.nhom && (
                                 <span className="text-[11px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded truncate max-w-[80px] font-bold border border-blue-100">
@@ -905,7 +1022,6 @@ export default function App() {
                               )}
                             </div>
 
-                            {/* Right Bottom: KH & Diff - Horizontal Layout */}
                             <div className="flex items-center gap-1 shrink-0">
                               <div
                                 className="bg-slate-100 text-slate-600 px-1.5 py-1 rounded text-[10px] font-bold border border-slate-200 min-w-[45px] text-center"
@@ -960,7 +1076,6 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* STATS ROW: KH vs ACTUAL */}
                   <div className="grid grid-cols-3 gap-2 mb-3 bg-slate-50 p-2 rounded-lg border border-slate-100">
                     <div className="text-center border-r border-slate-200">
                       <div className="text-[10px] text-slate-400 uppercase">
@@ -1048,42 +1163,77 @@ export default function App() {
           {/* --- REPORT VIEW --- */}
           {activeTab === "report" && (
             <div className="h-full flex flex-col bg-slate-50">
-              <div className="p-3 bg-white border-b border-slate-200 flex gap-2 shadow-sm shrink-0">
-                <input
-                  type="date"
-                  value={reportDate}
-                  onChange={(e) => setReportDate(e.target.value)}
-                  className="w-1/3 p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:outline-none focus:border-blue-500"
-                />
-                <div className="relative flex-1">
-                  <select
-                    value={reportFilterMa}
-                    onChange={(e) => setReportFilterMa(e.target.value)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:outline-none focus:border-blue-500 appearance-none truncate"
+              <div className="p-3 bg-white border-b border-slate-200 shrink-0 space-y-2 shadow-sm">
+                {/* Row 1: Date picker */}
+                <div className="flex gap-2">
+                  <input
+                    type="date"
+                    value={reportDate}
+                    onChange={(e) => setReportDate(e.target.value)}
+                    className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:outline-none focus:border-blue-500"
+                  />
+                  <button
+                    onClick={() => fetchReport(true)}
+                    disabled={loadingReport}
+                    className="px-3 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition flex items-center gap-1 justify-center disabled:opacity-50"
+                    title="Làm mới dữ liệu"
                   >
-                    <option value="">Tất cả Mã Hàng</option>
-                    {[
-                      ...new Set(
-                        reportData.map((item) => item.ma).filter(Boolean)
-                      ),
-                    ].map((ma, idx) => (
-                      <option key={idx} value={ma}>
-                        {ma}
-                      </option>
-                    ))}
-                  </select>
-                  <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-slate-500">
-                    <svg className="w-4 h-4 fill-current" viewBox="0 0 20 20">
-                      <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
-                    </svg>
+                    {loadingReport ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <RefreshCw size={16} />
+                    )}
+                  </button>
+                </div>
+
+                {/* Row 2: Filters */}
+                <div className="grid grid-cols-2 gap-2">
+                  {/* Product Code Filter */}
+                  <div className="relative">
+                    <select
+                      value={reportFilterMa}
+                      onChange={(e) => setReportFilterMa(e.target.value)}
+                      className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:outline-none focus:border-blue-500 appearance-none truncate"
+                    >
+                      <option value="">Tất cả Mã Hàng</option>
+                      {availableReportMas
+                        .sort((a, b) => {
+                          // Sort: numbers first, then text
+                          const aNum = !isNaN(Number(a));
+                          const bNum = !isNaN(Number(b));
+                          if (aNum && bNum) return Number(a) - Number(b);
+                          if (aNum) return -1;
+                          if (bNum) return 1;
+                          return a.localeCompare(b);
+                        })
+                        .map((ma, idx) => (
+                          <option key={idx} value={ma}>
+                            {ma}
+                          </option>
+                        ))}
+                    </select>
+                    <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-slate-500">
+                      <svg className="w-4 h-4 fill-current" viewBox="0 0 20 20">
+                        <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
+                      </svg>
+                    </div>
+                  </div>
+
+                  {/* ⚡ PO Input - Numeric for mobile keyboard */}
+                  <div className="relative">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={reportFilterPo}
+                      onChange={(e) =>
+                        setReportFilterPo(e.target.value.toUpperCase())
+                      }
+                      className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:outline-none focus:border-blue-500 uppercase"
+                      placeholder="Nhập PO..."
+                    />
                   </div>
                 </div>
-                <button
-                  onClick={fetchReport}
-                  className="px-3 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-md active:scale-95 transition flex items-center gap-1 justify-center"
-                >
-                  <Search size={16} />
-                </button>
               </div>
 
               <div className="flex-1 overflow-hidden relative">
@@ -1101,8 +1251,6 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Custom Report Header - Updated Layout for better fit */}
-                {/* Style: 20%, Màu: 12%, PO: 24%, Ship: 16%, Nhóm: 14%, Qty: 14% */}
                 <div className="grid grid-cols-[18%_10%_12%_24%_12%_12%_12%] gap-0.5 px-2 py-2 bg-slate-100 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider text-center">
                   <div className="text-left pl-1">Style</div>
                   <div>Màu</div>
@@ -1114,43 +1262,32 @@ export default function App() {
                 </div>
 
                 <div className="overflow-y-auto h-full pb-20 divide-y divide-slate-100 bg-white custom-scrollbar">
-                  {(reportFilterMa
-                    ? reportData.filter((item) => item.ma === reportFilterMa)
-                    : reportData
-                  ).length === 0 && !loadingReport ? (
+                  {displayedReportData.length === 0 && !loadingReport ? (
                     <div className="flex flex-col items-center justify-center h-40 text-slate-400 gap-2">
                       <Search size={32} className="opacity-20" />
                       <span className="text-xs">Chưa có dữ liệu hiển thị</span>
                     </div>
                   ) : (
-                    (reportFilterMa
-                      ? reportData.filter((item) => item.ma === reportFilterMa)
-                      : reportData
-                    ).map((item, idx) => (
+                    displayedReportData.map((item, idx) => (
                       <div
                         key={idx}
                         className="grid grid-cols-[18%_10%_12%_24%_12%_12%_12%] gap-0.5 px-2 py-2.5 text-xs hover:bg-slate-50 transition items-center border-b border-slate-50"
                       >
-                        {/* Style */}
                         <div className="text-left font-bold text-slate-800 break-words leading-tight pl-1">
                           {item.style}
                         </div>
-                        {/* Màu */}
                         <div className="text-center text-slate-600 break-words leading-tight text-[11px]">
                           {item.mau}
                         </div>
-                        {/* Đơn */}
                         <div className="text-center text-slate-600 break-words leading-tight text-[11px]">
                           {item.don}
                         </div>
-                        {/* PO - Big & Bold */}
                         <div
                           className="text-center text-blue-800 font-bold text-xs sm:text-sm truncate"
                           title={item.po}
                         >
                           {item.po}
                         </div>
-                        {/* Nhóm */}
                         <div className="text-center">
                           {item.nhom ? (
                             <span className="bg-slate-100 text-slate-600 px-1 py-0.5 rounded text-[9px] font-medium inline-block truncate max-w-full">
@@ -1160,11 +1297,9 @@ export default function App() {
                             "-"
                           )}
                         </div>
-                        {/* NK - Qty Entered */}
                         <div className="text-center font-bold text-slate-700 text-sm">
                           {formatDecimal(item.nk)}
                         </div>
-                        {/* Luỹ Kế - Total */}
                         <div className="text-right font-bold text-blue-700 text-sm pr-1">
                           {formatDecimal(item.qty)}
                         </div>
@@ -1200,8 +1335,8 @@ export default function App() {
             <div className="bg-blue-50 text-blue-800 p-3 rounded-lg text-xs border border-blue-100 flex items-start gap-2">
               <HelpCircle size={16} className="shrink-0 mt-0.5" />
               <span>
-                <strong>Lưu ý:</strong> Cần thiết lập đúng cột trong Sheet
-                Config.
+                <strong>Lưu ý:</strong> Script đã được tối ưu với CacheService
+                (5 phút). Copy và deploy vào Google Apps Script.
               </span>
             </div>
             <div className="relative group">
