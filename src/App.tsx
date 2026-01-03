@@ -559,7 +559,8 @@ export default function App() {
     const target = Number(selectedItem.kh);
     if (target > 0) {
       setQty(String(target));
-      if (qtyInputRef.current) qtyInputRef.current.focus();
+      // ⚡ REMOVED: Auto-focus causes keyboard to open on mobile
+      // User can click input if they want to edit
     } else {
       showToast("Không có KH", "info");
     }
@@ -605,7 +606,8 @@ export default function App() {
     setQty("");
     showToast("Đã lưu!", "success");
 
-    if (qtyInputRef.current) qtyInputRef.current.focus();
+    // ⚡ REMOVED: Auto-focus after submit causes keyboard to open on mobile
+    // User can manually select next item and click input when ready
 
     fetchGAS(apiUrl, payload)
       .then((res) => {
