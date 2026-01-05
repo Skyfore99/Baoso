@@ -130,7 +130,7 @@ function handleGetConfig(doc) {
   if (!sheetConfig) return responseJSON({ status: "success", items: [] });
   const lastRow = sheetConfig.getLastRow();
   if (lastRow < 2) return responseJSON({ status: "success", items: [] });
-  const configData = sheetConfig.getRange(2, 1, lastRow - 1, 9).getValues();
+  const configData = sheetConfig.getRange(2, 1, lastRow - 1, 10).getValues();
   let sheetData = doc.getSheetByName(SHEET_DATA);
   const totals = {};
   if (sheetData && sheetData.getLastRow() >= 2) {
@@ -148,7 +148,8 @@ function handleGetConfig(doc) {
     else shipdate = String(shipdate || "");
     const po = String(r[4]); const ma = String(r[0]); const mau = String(r[2]); const style = String(r[1]); const don = String(r[3]);
     const key = po + "_" + ma + "_" + mau + "_" + style + "_" + don;
-    return { ma, style, mau, don, po, shipdate, kh: Number(r[6]) || 0, nhom: String(r[7] || ""), current: totals[key] || 0 };
+    const xuatDu = String(r[9] || "").toLowerCase().trim();
+    return { ma, style, mau, don, po, shipdate, kh: Number(r[6]) || 0, nhom: String(r[7] || ""), current: totals[key] || 0, xuatDu };
   }).filter(item => item.ma);
   return responseJSON({ status: "success", items: items });
 }
@@ -1063,7 +1064,7 @@ export default function App() {
 
               {selectedItem && (
                 <div className="bg-white border-t border-slate-200 p-4 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] z-20 animate-in slide-in-from-bottom-10">
-                  <div className="flex justify-between items-center mb-3">
+                  <div className="flex justify-between items-center mb-2">
                     <div className="text-sm font-bold text-blue-700 truncate pr-2">
                       {selectedItem.style}{" "}
                       <span className="font-normal text-slate-500 text-xs">
@@ -1076,6 +1077,28 @@ export default function App() {
                     >
                       <X size={16} />
                     </button>
+                  </div>
+
+                  {/* PO, Đơn Hàng, and Xuất Dư Display */}
+                  <div className="flex gap-2 mb-2 text-xs items-center">
+                    <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded font-bold border border-blue-200">
+                      PO: {selectedItem.po}
+                    </span>
+                    <span className="bg-slate-50 text-slate-700 px-2 py-1 rounded font-medium border border-slate-200">
+                      Đơn: {selectedItem.don}
+                    </span>
+                    {/* Xuất Dư Warning - Right Side */}
+                    {selectedItem.xuatDu === "x" && (
+                      <span className="ml-auto px-2 py-1 bg-orange-50 border-2 border-orange-400 rounded flex items-center gap-1">
+                        <AlertTriangle
+                          size={14}
+                          className="text-orange-600 shrink-0"
+                        />
+                        <span className="text-xs font-bold text-orange-700">
+                          Có xuất dư
+                        </span>
+                      </span>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-3 gap-2 mb-3 bg-slate-50 p-2 rounded-lg border border-slate-100">
