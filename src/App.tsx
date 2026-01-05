@@ -68,13 +68,14 @@ function doPost(e) {
       const qty = parseFloat(request.qty);
       const limit = parseFloat(request.limit) || 0; 
       const currentTotal = getCumulative(sheet, request.po, request.ma, request.mau, request.style, request.don);
-      const newTotal = parseFloat((currentTotal + qty).toFixed(2));
+      const newTotal = Math.round((currentTotal + qty) * 1000000) / 1000000;
       
       if (limit > 0 && (newTotal > limit)) {
         return responseJSON({ status: "error", message: "Vượt KH! (" + newTotal + "/" + limit + ")" });
       }
       
-      sheet.appendRow([new Date(), "'" + request.po, request.don, request.ma, request.style, request.mau, request.shipdate, request.nhom, qty]);
+      const dateString = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy");
+      sheet.appendRow([dateString, "'" + request.po, request.don, request.ma, request.style, request.mau, request.shipdate, request.nhom, qty]);
       updateConfigSheet(doc, request, newTotal);
       CacheService.getScriptCache().remove(CACHE_KEY); // Clear cache
       return responseJSON({ status: "success", total: newTotal, msg: request.style + ' (' + request.mau + ')' });
@@ -403,6 +404,14 @@ export default function App() {
   }, [activeTab, reportDate]);
 
   const showToast = (msg, type = "info") => setToast({ show: true, msg, type });
+
+  // ⚡ Helper: Fix floating-point precision (store up to 6 decimals)
+  const fixDecimal = (num) => {
+    if (num === undefined || num === null || num === "") return 0;
+    return Math.round(parseFloat(num) * 1000000) / 1000000;
+  };
+
+  // ⚡ Helper: Format for display (show 2 decimals)
   const formatDecimal = (num) =>
     num === undefined || num === null || num === ""
       ? "0.00"
@@ -581,9 +590,9 @@ export default function App() {
       if (!selectedItem) return showToast("Chưa chọn mã", "error");
       if (!qty) return showToast("Chưa nhập SL", "error");
 
-      const newCumulative = parseFloat(qty);
-      const currentCumulative = selectedItem.current || 0;
-      inputQty = newCumulative - currentCumulative;
+      const newCumulative = fixDecimal(qty);
+      const currentCumulative = fixDecimal(selectedItem.current || 0);
+      inputQty = fixDecimal(newCumulative - currentCumulative);
 
       payload = {
         ...payload,
@@ -598,7 +607,7 @@ export default function App() {
       };
     }
 
-    const newTotal = parseFloat(qty);
+    const newTotal = fixDecimal(qty);
     const updatedItem = { ...selectedItem, current: newTotal };
     setSelectedItem(updatedItem);
     setMasterItems((prev) =>
